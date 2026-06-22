@@ -78,24 +78,21 @@ local function get_body(resp)
 end
 
 local function fetch_license_text()
-    -- If loader provided license text in-memory, use it (and optional headers)
-    if type(_G) == 'table' and type(_G.LOADER_LICENSE_TEXT) == 'string' then
-        return _G.LOADER_LICENSE_TEXT, (_G.LOADER_LICENSE_HEADERS or nil)
-    end
-    -- Try HTTP fetch if available
-    if type(gg.makeRequest) == 'function' then
-        local ok, resp = pcall(gg.makeRequest, {url = LICENSE_URL, method = 'GET', timeout = 8000})
-        if ok and resp and (resp.content or resp.body) then
-            return get_body(resp), resp.headers or resp.header or resp.Headers
+    -- If running locally (loader provided text), use it without network attempts
+    if type(_G) == 'table' and _G.LOADER_LOCAL_ONLY then
+        if type(_G.LOADER_LICENSE_TEXT) == 'string' and #_G.LOADER_LICENSE_TEXT > 0 then
+            return _G.LOADER_LICENSE_TEXT, (_G.LOADER_LICENSE_HEADERS or nil)
+        else
+            return nil, 'network'  -- loader should have validated this
         end
     end
 
-    -- Fallback: attempt to read local license file (p.txt) in script DIR
-    local local_text = read('p.txt') or read('p.txt.txt') or read('license.txt') or read('licenses.txt')
-    if type(local_text) == 'string' and #local_text > 0 then
-        return local_text, nil
-    end
-    return nil, nil
+    -- Network mode: try to fetch from LICENSE_URL
+    if type(gg.makeRequest) ~= 'function' then return nil, 'network' end
+    local ok, resp = pcall(gg.makeRequest, {url = LICENSE_URL, method = 'GET', timeout = 8000})
+    if not ok then return nil, 'network' end
+    if not resp then return nil, 'denied' end
+    return get_body(resp), resp.headers or resp.header or resp.Headers
 end
 
 local function parse_http_date(date_str)
@@ -256,32 +253,22 @@ local function check_key(key)
     local date_header = nil
     if type(headers) == 'table' then date_header = headers.Date or headers.date end
 
-    if not date_header and type(gg) == 'table' and type(gg.makeRequest) == 'function' then
-        -- try to fetch only headers from LICENSE_URL to obtain server Date
-        local okh, rh = pcall(gg.makeRequest, {url = LICENSE_URL, method = 'HEAD', timeout = 3000})
-        if okh and rh and type(rh) == 'table' then date_header = rh.headers or rh.header or rh.Headers end
-        if not date_header then
-            -- try GET as a fallback to obtain headers
-            local okg, rg = pcall(gg.makeRequest, {url = LICENSE_URL, method = 'GET', timeout = 3000})
-            if okg and rg and type(rg) == 'table' then date_header = rg.headers or rg.header or rg.Headers end
+    -- Require server Date header (no local time fallback)
+    if not date_header then
+        -- try HEAD/GET to obtain server Date
+        if type(gg) == 'table' and type(gg.makeRequest) == 'function' then
+            local okh, rh = pcall(gg.makeRequest, {url = LICENSE_URL, method = 'HEAD', timeout = 3000})
+            if okh and rh and type(rh) == 'table' then date_header = rh.headers or rh.header or rh.Headers end
+            if not date_header then
+                local okg, rg = pcall(gg.makeRequest, {url = LICENSE_URL, method = 'GET', timeout = 3000})
+                if okg and rg and type(rg) == 'table' then date_header = rg.headers or rg.header or rg.Headers end
+            end
         end
+        if not date_header then return nil, 'no_server_date' end
     end
-
-    local time_was_fallback = false
-    if date_header then
-        now = parse_http_date(date_header)
-        if not now then
-            now = os.time()
-            time_was_fallback = true
-        end
-    else
-        -- No server date available: fallback to local time but note the fallback
-        now = os.time()
-        time_was_fallback = true
-    end
-
-    -- record time source for caller/alerts
-    LICENSE_TIME_SOURCE = time_was_fallback and 'local' or 'server'
+    now = parse_http_date(date_header)
+    if not now then return nil, 'invalid_server_date' end
+    LICENSE_TIME_SOURCE = 'server'
 
     -- Iterate lines, skip malformed/commented lines; only evaluate well-formed entries
     local function scan_lines()
@@ -351,8 +338,11 @@ function require_license()
     
     local ok, status, expiry = check_key(key)
     
-    -- Network or time error: notify then exit
-    if ok == nil then notify_and_exit('Network or server time error while checking key; aborting') end
+    -- Network or time error: notify then exit — show specific reason to help debugging
+    if ok == nil then
+        local reason = tostring(status or 'unknown')
+        notify_and_exit('License check failed: ' .. reason .. '\nEnsure p.txt is present locally or allow internet access')
+    end
     
     if ok then
         -- If server time was unavailable, warn user but allow use with local time
@@ -374,6 +364,25 @@ function require_license()
         gg.alert('HWID error')
     elseif status == 'wrong_device' then
         gg.alert('Key not valid for this device')
+    elseif status == 'not_found' then
+        -- Provide a small preview to help debug missing-key issues
+        local src_text = nil
+        pcall(function()
+            src_text = fetch_license_text()
+        end)
+        local preview = ''
+        if type(src_text) == 'string' and #src_text > 0 then
+            local i = 0
+            for line in src_text:gmatch('([^\r\n]+)') do
+                i = i + 1
+                preview = preview .. line .. '\n'
+                if i >= 12 then break end
+            end
+        else
+            preview = '(no local or remote license text available)'
+        end
+        local msg = 'Key not found.\nEntered key: ' .. tostring(key) .. '\nDevice ID: ' .. tostring(ID) .. '\n\nLicense preview:\n' .. preview
+        if type(gg) == 'table' and type(gg.alert) == 'function' then gg.alert(msg) else print(msg) end
     else
         gg.alert('Key not found')
     end
@@ -1739,8 +1748,8 @@ function d()
     end
     gg.toast("Goodbye. All files restored.")
     gg.sleep(300)
-    -- Signal controlled exit to main loop
-    error("__FORCED_EXIT__")
+    -- Instead of terminating, simply return to caller (acts like cancel/minimize)
+    return
 end
 
 -- ==================== LOCAL STARTUP (NO NETWORK) ====================
