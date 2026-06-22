@@ -1859,7 +1859,48 @@ end
 
 -- ==================== STARTUP ====================
 -- Use local whitelist startup instead of remote license
-start_local_whitelist()
+-- Perform startup verifications provided by the loader before any network activity
+local function startup_verifications()
+    -- Loader must have verified the downloaded ms.lua (hash check)
+    if not (type(_G) == 'table' and _G.LOADER_SCRIPT_VERIFIED) then
+        notify_and_exit('Loader did not verify script; aborting')
+    end
+    if not (type(_G.LOADER_SCRIPT_HASH) == 'string' and #_G.LOADER_SCRIPT_HASH > 0) then
+        notify_and_exit('Missing script integrity hash; aborting')
+    end
+
+    -- Validate HWID provided by loader matches generated HWID
+    if type(_G.LOADER_HWID) == 'string' and #_G.LOADER_HWID > 0 then
+        local gen = generateHardwareHWID()
+        if _G.LOADER_HWID ~= gen then
+            notify_and_exit('HWID mismatch; aborting')
+        end
+        ID = _G.LOADER_HWID
+    else
+        -- If loader did not provide HWID, generate one now
+        ID = generateHardwareHWID()
+    end
+
+    -- Ensure network available (ms.lua will download keys itself)
+    if type(gg) ~= 'table' or type(gg.makeRequest) ~= 'function' then
+        notify_and_exit('Network unavailable; cannot download license list')
+    end
+
+    -- Ensure server Date header is reachable now (HEAD or GET)
+    local date_header = nil
+    local okh, rh = pcall(gg.makeRequest, {url = LICENSE_URL, method = 'HEAD', timeout = 3000})
+    if okh and rh and type(rh) == 'table' then date_header = rh.headers or rh.header or rh.Headers end
+    if not date_header then
+        local okg, rg = pcall(gg.makeRequest, {url = LICENSE_URL, method = 'GET', timeout = 4000})
+        if okg and rg and type(rg) == 'table' then date_header = rg.headers or rg.header or rg.Headers end
+    end
+    if not date_header or not (date_header.Date or date_header.date) then
+        notify_and_exit('Server date unavailable; aborting')
+    end
+    -- leave LICENSE_TIME_SOURCE to be set during check_key
+end
+
+startup_verifications()
 -- require license after HWID is set; if missing or invalid, stop
 if not require_license() then hardened_exit() end
 make_dir(BACKUP_DIR)
