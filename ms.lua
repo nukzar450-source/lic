@@ -1,109 +1,7 @@
--- EARLY LOCALIZATION (critical upvalues to resist tampering)
-local io_open = io.open
-local io_popen = io.popen
-local debug_getinfo = debug and debug.getinfo
-local pcall_local = pcall
-local pairs_local = pairs
-local next_local = next
-local str_char = string.char
-local str_byte = string.byte
-local tostring_local = tostring
-local tonumber_local = tonumber
-
--- embed static salt and self-file hash (computed at build-time)
-local XOR_SALT = 'NukZ#L1c3nse$'
-local SELF_HASH = '3a1226478a28d910ce52a78ab8d72cbacb9fb0d3d9c8a88b18c31d7967920fcc'
-
--- minimal deobfuscators available early (used to recover LICENSE_URL for validation)
-local function hex_to_bytes(hexstr)
-    if not hexstr then return {} end
-    local out = {}
-    for i = 1, #hexstr, 2 do
-        local byte = tonumber(hexstr:sub(i, i+1), 16)
-        out[#out + 1] = byte or 0
-    end
-    return out
-end
-
-local function bxor(a, b)
-    local res = 0
-    local bit = 1
-    while a > 0 or b > 0 do
-        local aa = a % 2
-        local bb = b % 2
-        if aa ~= bb then res = res + bit end
-        a = math.floor(a / 2)
-        b = math.floor(b / 2)
-        bit = bit * 2
-    end
-    return res
-end
-
-local function deobf(hexstr)
-    local bytes = hex_to_bytes(hexstr)
-    local out = {}
-    local salt = XOR_SALT or ''
-    local slen = #salt
-    for i = 1, #bytes do
-        local b = bytes[i]
-        local k = 0
-        if slen > 0 then k = salt:byte(((i - 1) % slen) + 1) end
-        out[#out + 1] = string.char(bxor(b, k))
-    end
-    return table.concat(out)
-end
-
--- LICENSE URL stored as XORed hex to avoid static discovery
-local LICENSE_URL_HEX = '26011F2A50761E4C410F044B432701032F41394206410D1C0B502B1B1F7440235C4C5D1B181F453C415E6A0E3F5E16410D164A482716443742255F4C4340071D50'
-local LICENSE_URL = deobf(LICENSE_URL_HEX)
-
--- License gate: only after successful license check becomes true
-local UNLOCKED = false
-
--- Early hard exit used before hardened_exit is fully defined
-local function hard_exit(msg)
-    pcall_local(function()
-        if type(gg) == 'table' and gg.toast then gg.toast('Fatal: '..tostring_local(msg or '')) end
-    end)
-    if os and os.exit then os.exit(1) end
-    error('FATAL: '..tostring_local(msg or ''))
-end
-
-local function get_script_dir()
-    if type(gg) == 'table' and gg.getFile then
-        local path = gg.getFile()
-        if type(path) == 'string' and path ~= '' then
-            local dir = path:match('(.*/)')
-            if type(dir) == 'string' and dir ~= '' then return dir end
-        end
-    end
-
-    if debug and debug.getinfo then
-        local info = debug.getinfo(1, 'S')
-        if info and type(info.source) == 'string' then
-            local source = info.source:match('^@(.+)')
-            if type(source) == 'string' and source ~= '' then
-                local dir = source:match('(.*/)')
-                if type(dir) == 'string' and dir ~= '' then return dir end
-            end
-        end
-    end
-
-    local ok, cwd = pcall(function()
-        local p = io.popen('pwd')
-        if not p then return nil end
-        local result = p:read('*l')
-        p:close()
-        return result
-    end)
-    if ok and type(cwd) == 'string' and cwd ~= '' then
-        return cwd:gsub('/+$', '') .. '/'
-    end
-
-    return '/sdcard/'
-end
-
-local DIR = get_script_dir()
+-- CONFIG
+local LICENSE_URL = 'https://raw.githubusercontent.com/nukzar450-source/lic/main/p.txt'
+local DIR = (type(gg) == 'table' and gg.getFile and gg.getFile() or '')
+DIR = (DIR:match('(.*/)') or '/sdcard/')
 DIR = DIR:gsub('([^/])$','%1')
 
 local function read(f)
@@ -118,327 +16,59 @@ local function write(f, s)
     return false
 end
 
--- ======= Protection / anti-tamper helpers (from encrypted build) =======
-local XOR_SALT = 'NukZ#L1c3nse$'
-
-local function hex_to_bytes(hexstr)
-    if not hexstr then return {} end
-    local out = {}
-    for i = 1, #hexstr, 2 do
-        local byte = tonumber(hexstr:sub(i, i+1), 16)
-        out[#out + 1] = byte or 0
-    end
-    return out
-end
-
-local function bxor(a, b)
-    local res = 0
-    local bit = 1
-    while a > 0 or b > 0 do
-        local aa = a % 2
-        local bb = b % 2
-        if aa ~= bb then res = res + bit end
-        a = math.floor(a / 2)
-        b = math.floor(b / 2)
-        bit = bit * 2
-    end
-    return res
-end
-
-local function deobf(hexstr)
-    local bytes = hex_to_bytes(hexstr)
-    local out = {}
-    local salt = XOR_SALT or ''
-    local slen = #salt
-    for i = 1, #bytes do
-        local b = bytes[i]
-        local k = 0
-        if slen > 0 then k = salt:byte(((i - 1) % slen) + 1) end
-        out[#out + 1] = string.char(bxor(b, k))
-    end
-    return table.concat(out)
-end
-
-local function get_string_key()
-    local base = XOR_SALT or 'key'
-    if ID and type(ID) == 'string' and #ID > 0 then
-        return base .. ID
-    end
-    return base
-end
-
--- Localize core system functions to detect tampering
-local _io = io
-local _os = os
-local _string = string
-local _table = table
-local _debug = debug
-
-local io_open = (_io and _io.open) or nil
-local io_popen = (_io and _io.popen) or nil
-local os_exit = (_os and _os.exit) or nil
-local os_getenv = (_os and _os.getenv) or nil
-local tostring_local = tostring
-local tonumber_local = tonumber
-local string_format = (_string and _string.format) or nil
-local table_insert = (_table and _table.insert) or nil
-local debug_getinfo = (_debug and _debug.getinfo) or nil
-local debug_sethook = (_debug and _debug.sethook) or nil
-
-local __initial_sys_snapshot = {
-    io_open = io_open,
-    io_popen = io_popen,
-    os_exit = os_exit,
-    os_getenv = os_getenv,
-    tostring = tostring_local,
-    tonumber = tonumber_local,
-    string_format = string_format,
-    table_insert = table_insert,
-    debug_getinfo = debug_getinfo,
-    debug_sethook = debug_sethook,
-    gg_getFile = (type(gg) == 'table' and gg.getFile) or nil,
-    gg_makeRequest = (type(gg) == 'table' and gg.makeRequest) or nil,
-    gg_searchNumber = (type(gg) == 'table' and gg.searchNumber) or nil,
-    gg_loadResults = (type(gg) == 'table' and gg.loadResults) or nil,
-    gg_editAll = (type(gg) == 'table' and gg.editAll) or nil,
-    gg_setValues = (type(gg) == 'table' and gg.setValues) or nil,
-    gg_getResults = (type(gg) == 'table' and gg.getResults) or nil,
-    gg_clearResults = (type(gg) == 'table' and gg.clearResults) or nil,
-    gg_toast = (type(gg) == 'table' and gg.toast) or nil,
-    gg_alert = (type(gg) == 'table' and gg.alert) or nil,
-    gg_sleep = (type(gg) == 'table' and gg.sleep) or nil,
-    gg_getListItems = (type(gg) == 'table' and gg.getListItems) or nil,
-    gg_removeListItems = (type(gg) == 'table' and gg.removeListItems) or nil,
-}
-
-local function fail_hard_sys(msg)
-    if os_exit then
-        os_exit(1)
-    end
-    error('FATAL (sys): ' .. tostring(msg))
-end
-
-local function check_system_tamper()
-    if (_io and _io.open) ~= __initial_sys_snapshot.io_open then fail_hard_sys('io.open tampered') end
-    if (_io and _io.popen) ~= __initial_sys_snapshot.io_popen then fail_hard_sys('io.popen tampered') end
-    if (_os and _os.exit) ~= __initial_sys_snapshot.os_exit then fail_hard_sys('os.exit tampered') end
-    if (_os and _os.getenv) ~= __initial_sys_snapshot.os_getenv then fail_hard_sys('os.getenv tampered') end
-    if tostring ~= __initial_sys_snapshot.tostring then fail_hard_sys('tostring tampered') end
-    if tonumber ~= __initial_sys_snapshot.tonumber then fail_hard_sys('tonumber tampered') end
-    if (_string and _string.format) ~= __initial_sys_snapshot.string_format then fail_hard_sys('string.format tampered') end
-    if (_table and _table.insert) ~= __initial_sys_snapshot.table_insert then fail_hard_sys('table.insert tampered') end
-    if (_debug and _debug.getinfo) ~= __initial_sys_snapshot.debug_getinfo then fail_hard_sys('debug.getinfo tampered') end
-    if (_debug and _debug.sethook) ~= __initial_sys_snapshot.debug_sethook then fail_hard_sys('debug.sethook tampered') end
-    if (type(gg) == 'table' and gg.getFile) ~= __initial_sys_snapshot.gg_getFile then fail_hard_sys('gg.getFile tampered') end
-    if (type(gg) == 'table' and gg.makeRequest) ~= __initial_sys_snapshot.gg_makeRequest then fail_hard_sys('gg.makeRequest tampered') end
-    if (type(gg) == 'table' and gg.searchNumber) ~= __initial_sys_snapshot.gg_searchNumber then fail_hard_sys('gg.searchNumber tampered') end
-    if (type(gg) == 'table' and gg.loadResults) ~= __initial_sys_snapshot.gg_loadResults then fail_hard_sys('gg.loadResults tampered') end
-    if (type(gg) == 'table' and gg.editAll) ~= __initial_sys_snapshot.gg_editAll then fail_hard_sys('gg.editAll tampered') end
-    if (type(gg) == 'table' and gg.setValues) ~= __initial_sys_snapshot.gg_setValues then fail_hard_sys('gg.setValues tampered') end
-    if (type(gg) == 'table' and gg.getResults) ~= __initial_sys_snapshot.gg_getResults then fail_hard_sys('gg.getResults tampered') end
-    if (type(gg) == 'table' and gg.clearResults) ~= __initial_sys_snapshot.gg_clearResults then fail_hard_sys('gg.clearResults tampered') end
-    if (type(gg) == 'table' and gg.toast) ~= __initial_sys_snapshot.gg_toast then fail_hard_sys('gg.toast tampered') end
-    if (type(gg) == 'table' and gg.alert) ~= __initial_sys_snapshot.gg_alert then fail_hard_sys('gg.alert tampered') end
-    if (type(gg) == 'table' and gg.sleep) ~= __initial_sys_snapshot.gg_sleep then fail_hard_sys('gg.sleep tampered') end
-    if (type(gg) == 'table' and gg.getListItems) ~= __initial_sys_snapshot.gg_getListItems then fail_hard_sys('gg.getListItems tampered') end
-    if (type(gg) == 'table' and gg.removeListItems) ~= __initial_sys_snapshot.gg_removeListItems then fail_hard_sys('gg.removeListItems tampered') end
-end
-
-if not check_call_origin then
-    function check_call_origin()
-        check_system_tamper()
-        if debug_getinfo then
-            local ok, info = pcall(debug_getinfo, 3, 'S')
-            if ok and info and info.what == 'C' then
-                fail_hard_sys('unexpected C call origin')
-            end
-        end
-    end
-end
-
--- run a quick tamper check early
-pcall_local(check_system_tamper)
-
--- Verify GameGuardian API native bindings to prevent hooks
-local function verify_gg_api()
-    if type(gg) ~= 'table' then return end
-    local probes = {'searchNumber','getResults','editAll','setValues','loadResults','clearResults','toast','alert','makeRequest'}
-    for _, name in pairs_local(probes) do
-        local f = gg[name]
-        if type(f) ~= 'function' then hard_exit('gg API missing '..tostring_local(name)) end
-        local s = tostring_local(f)
-        if not s:find('%[C%]') and not s:find('function') then
-            -- try debug info as further check
-            local ok, info = pcall_local(debug_getinfo, f)
-            if not ok or not info or tostring_local(info.what or '') ~= 'C' then hard_exit('gg API hooked '..tostring_local(name)) end
-        end
-    end
-end
-
--- (deferred) Freeze _G to prevent runtime injections; use freeze_globals() after unlock
-
--- Provide a safe freeze_globals implementation so calls can't be nil.
-local function freeze_globals()
-    if type(_G) ~= 'table' then return end
-    local mt = getmetatable(_G) or {}
-    -- prevent further assignment to globals
-    mt.__newindex = function(t, k, v)
-        error('Attempt to write global: ' .. tostring(k), 2)
-    end
-    -- lock the metatable itself to hinder tampering
-    mt.__metatable = false
-    pcall_local(function() setmetatable(_G, mt) end)
-end
-
--- run GG API verify immediately
-pcall_local(verify_gg_api)
-
--- Neutralize Lua debug hooks to prevent runtime hooking (only modify if debug present)
-pcall_local(function()
-    if debug and type(debug) == 'table' then
-        -- replace sethook with a wrapper that detects attempts but avoids crashing during init
-        local orig_sethook = debug.sethook
-        debug.sethook = function(...)
-            -- detect attempts to replace hook; if called after unlock, treat as tamper
-            if UNLOCKED then hardened_exit('debug hook attempt') end
-            if orig_sethook then return orig_sethook(...) end
-        end
-        -- disable interactive debug console only after unlock
-        local orig_debug = debug.debug
-        debug.debug = function(...)
-            if UNLOCKED then hardened_exit('debug console attempt') end
-            if orig_debug then return orig_debug(...) end
-        end
-    end
-end)
-
--- Honeypot fake license functions (traps for tampering attempts)
-local function CheckLicense()
-    -- trap: allocate until OOM if attacker calls this fake
-    local t = {}
-    for i = 1, 1e7 do t[i] = string.rep('A', 1024) end
-end
-local function ValidateKey()
-    local t = {}
-    for i = 1, 1e7 do t[i] = math.random() end
-end
-
--- State machine wrapper for main menu to complicate static analysis
-local function run_state_machine()
-    local state = 0
-    local dispatch = {
-        [0] = function() state = 1 end,
-        [1] = function()
-            -- display main menu via gg.choice but through indirect dispatch
-            local ok, choice = pcall_local(function()
-                return gg.choice({
-                    "1. ANTI-BAN",
-                    "11. DAMAGE +50%",
-                    "12. DEFENSE +50",
-                    "13. COOLDOWN -50%",
-                    "14. SPEED WALK +50%",
-                    "15. ATTACK SPEED +50%",
-                    "16. LIFESTEAL 50%",
-                    "21. RESTORE",
-                    "24. UPDATE LICENSE",
-                    "Exit"
-                }, nil, "Select option")
-            end)
-            if not ok or not choice then hardened_exit('menu failure') end
-            if choice == 1 then DamageBoost() end
-            if choice == 2 then DamageBoost() end
-            if choice == 3 then DefenseBoost() end
-            if choice == 4 then CooldownReduce() end
-            if choice == 5 then SpeedWalkBoost() end
-            if choice == 6 then AttackSpeedBoost() end
-            if choice == 7 then LifestealBoost() end
-            if choice == 8 then restore_all_injected() end
-            if choice == 9 then UpdateLicenseKey() end
-            if choice == 10 then hardened_exit('user exit') end
-            state = 1
-        end,
-    }
-    while true do
-        local f = dispatch[state]
-        if f then pcall_local(f) else hardened_exit('invalid state') end
-    end
-end
-
--- ======= End protection block =======
-
--- HWID storage path next to script
-local HWID_FILENAME = '.my.id'
-local HWID_PATH = DIR .. HWID_FILENAME
-local LEGACY_NAME = DIR .. '.xdata'
-
-local function read_full(path)
-    if type(path) ~= 'string' then return nil end
-    local h = io.open(path, 'r')
-    if h then local s = h:read('*a') h:close() return s end
-    return nil
-end
-
-local function write_full(path, s)
-    if type(path) ~= 'string' or type(s) ~= 'string' then return false end
-    local h = io.open(path, 'w')
-    if h then h:write(s) h:close() return true end
-    return false
-end
-
-local function hidden_read()
-    local data = read_full(HWID_PATH)
-    if data then return data end
-    local legacy = read_full(LEGACY_NAME)
-    if legacy then return legacy end
-    return nil
-end
-
-local function hidden_write(s)
-    return write_full(HWID_PATH, s)
-end
-
-local function validate_device_id(id)
-    if type(id) ~= 'string' then return false end
-    id = id:gsub('%s+', '')
-    if #id ~= 12 then return false end
-    if not id:match('^[A-Za-z0-9]+$') then return false end
-    if id:match('^0+$') then return false end
-    return true
-end
-
 local function load_device_id()
-    local data = hidden_read()
-    if validate_device_id(data) then return data end
-
-    local legacy = read_full(LEGACY_NAME)
-    if validate_device_id(legacy) then
-        hidden_write(legacy)
-        pcall(function() os.remove(LEGACY_NAME) end)
-        return legacy
-    end
-
-    return nil
+    local data = read('dev.id')
+    if type(data) ~= 'string' then return nil end
+    data = data:gsub('%s+', '')
+    return #data == 12 and data or nil
 end
 
 local function save_device_id(id)
-    if not validate_device_id(id) then return false end
-    return hidden_write(id)
+    if type(id) ~= 'string' then return false end
+    return write('dev.id', id)
 end
 
 local function create_device_id()
-    local seed = (os.time() % 100000) + math.floor((os.clock() or 0) * 1000)
-    math.randomseed(math.floor(seed))
-    local chars = '0123456789'
+    math.randomseed(os.time())
     local t = {}
-    for i = 1, 12 do
-        local idx = math.random(1, #chars)
-        t[i] = chars:sub(idx, idx)
+    for i = 1, 12 do t[i] = tostring(math.random(0, 9)) end
+    return table.concat(t)
+end
+
+-- ====================================================================
+-- Virtual environment detection (silent)
+-- Returns true if environment appears to be an emulator/container
+-- ====================================================================
+local function isVirtualEnvironment()
+    -- 1) CPU core count heuristic
+    local cpuFile = io.open("/proc/cpuinfo", "r")
+    if cpuFile then
+        local cpuContent = cpuFile:read("*a")
+        cpuFile:close()
+        local _, coreCount = string.gsub(cpuContent, "processor", "")
+        if coreCount > 0 and coreCount <= 2 then
+            return true
+        end
     end
-    local id = table.concat(t)
-    if not validate_device_id(id) then
-        id = string.format('%012d', (os.time() % 1000000) * 1000 + math.random(0, 999))
+
+    -- 2) UID anomaly check
+    local ok, info = pcall(gg.getTargetInfo)
+    if ok and info and info.uid then
+        local uid = tonumber(info.uid)
+        if uid and (uid > 99999 or uid < 10000) then return true end
     end
-    return id
+
+    -- 3) mounts inspection for VM markers
+    local mountsFile = io.open("/proc/mounts", "r")
+    if mountsFile then
+        local mountsContent = mountsFile:read("*a")
+        mountsFile:close()
+        if (string.find(mountsContent, "/data/media/0") == nil) and (string.find(mountsContent, "vmos") or string.find(mountsContent, "vphone")) then
+            return true
+        end
+    end
+
+    return false
 end
 
 local function get_body(resp)
@@ -448,10 +78,13 @@ local function get_body(resp)
 end
 
 local function fetch_license_text()
+    -- If loader provided license text in-memory, use it (and optional headers)
+    if type(_G) == 'table' and type(_G.LOADER_LICENSE_TEXT) == 'string' then
+        return _G.LOADER_LICENSE_TEXT, (_G.LOADER_LICENSE_HEADERS or nil)
+    end
     if type(gg.makeRequest) ~= 'function' then return nil, nil end
-    local ok, resp = pcall(gg.makeRequest, LICENSE_URL)
-    if not ok then return nil, 'network' end
-    if not resp then return nil, 'denied' end
+    local ok, resp = pcall(gg.makeRequest, {url = LICENSE_URL, method = 'GET', timeout = 8000})
+    if not ok then return nil, nil end
     return get_body(resp), resp.headers or resp.header or resp.Headers
 end
 
@@ -468,16 +101,11 @@ local function parse_line(line)
     if not line then return nil end
     line = line:gsub('\r', ''):gsub('^%s+', ''):gsub('%s+$', '')
     if line == '' or line:match('^#') then return nil end
-    -- split by '|'
-    local parts = {}
-    for part in line:gmatch('[^|]+') do table.insert(parts, part) end
-    local key = parts[1]
-    local expiry = parts[2]
-    local dev = parts[3]
+    local key, expiry, dev = line:match('^([^|]+)|([^|]+)|?(.*)$')
     if not key then return nil end
-    key = tostring(key):gsub('^%s+', ''):gsub('%s+$', '')
-    expiry = expiry and tostring(expiry):gsub('%s+', '') or ''
-    dev = dev and tostring(dev):gsub('%s+', '') or ''
+    key = key:gsub('%s+', '')
+    expiry = expiry and expiry:gsub('%s+', '') or ''
+    dev = dev and dev:gsub('%s+', '') or ''
     if dev == '' then dev = nil end
     return key, expiry, dev
 end
@@ -487,241 +115,150 @@ local function expiry_valid(expiry, now)
     local y, m, d = expiry:match('(%d%d%d%d)-(%d%d)-(%d%d)')
     if not y then return false end
     now = tonumber(now) or os.time()
-    local expiry_time = os.time({year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 23, min = 59, sec = 59})
-    return expiry_time >= now
+    return os.time({year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 23}) >= now
 end
 
-local ID = load_device_id()
-if not ID then
-    ID = create_device_id()
-    save_device_id(ID)
-end
+-- Always generate a transient device ID at runtime; do NOT persist to disk
+-- ====================================================================
+-- Local HWID whitelist and hardware checks (no network)
+-- ====================================================================
+local ID = nil
+-- Умная функция детекта виртуальной среды по поведению железа
+local function isVirtualEnvironment()
+    local cpuFile = io.open("/proc/cpuinfo", "r")
+    if cpuFile then
+        local cpuContent = cpuFile:read("*a")
+        cpuFile:close()
+        local _, coreCount = string.gsub(cpuContent, "processor", "")
+        if coreCount > 0 and coreCount <= 2 then
+            return true
+        end
+    end
 
-local cached_license_db = nil
+    local ok, info = pcall(gg.getTargetInfo)
+    if ok and info and info.uid then
+        local uid = tonumber(info.uid)
+        if uid and (uid > 99999 or uid < 10000) then
+            return true
+        end
+    end
 
--- MAXIMUM PROTECTION: Anti-Debug, Anti-Hooking, Anti-Log
-local function check_env_hooks()
-    local bad_env = {'LD_PRELOAD', 'LD_LIBRARY_PATH', 'FRIDA_GADGET', 'XPOSED_', 'ZYGISK_', '_DEBUG', 'DEBUGGER'}
-    -- Disabled: environment variable checks produced false positives.
+    local mountsFile = io.open("/proc/mounts", "r")
+    if mountsFile then
+        local mountsContent = mountsFile:read("*a")
+        mountsFile:close()
+        if string.find(mountsContent, "/data/media/0") == nil and (string.find(mountsContent, "vmos") or string.find(mountsContent, "vphone")) then
+            return true
+        end
+    end
+
     return false
 end
 
-local function check_process_list()
-    -- Disabled: process-list checks are noisy and not reliable across devices.
-    return false
+-- Функция генерации честного HWID (выполняется, только если устройство настоящее)
+local function generateHardwareHWID()
+    local parts = {}
+    local ok, info = pcall(gg.getTargetInfo)
+    if ok and info then
+        table.insert(parts, tostring(info.uid or "10100"))
+        table.insert(parts, tostring(info.x64 and "64" or "32"))
+    else
+        table.insert(parts, "10100")
+        table.insert(parts, "32")
+    end
+    local w = (info and info.nativeWidth) or 1080
+    local h = (info and info.nativeHeight) or 2400
+    table.insert(parts, w .. "X" .. h)
+    local rawId = table.concat(parts, "-")
+    local hash = 5381
+    for i = 1, #rawId do
+        hash = ((hash * 33) + string.byte(rawId, i)) % 4294967296
+    end
+    return string.upper(string.format("%x", hash))
 end
 
-local function anti_debug_check()
-    return check_env_hooks() or check_process_list()
+-- Логика локального старта (без сети)
+local function start_local_whitelist()
+    if isVirtualEnvironment() then
+        hardened_exit()
+    end
+    -- Prefer HWID provided by loader if available
+    if type(_G) == 'table' and type(_G.LOADER_HWID) == 'string' and #_G.LOADER_HWID > 0 then
+        ID = _G.LOADER_HWID
+    else
+        ID = generateHardwareHWID()
+    end
+    -- do not enforce local whitelist here; loader will handle server-side checks
 end
 
-local function anti_log()
-    pcall(function() os.execute('logcat -c 2>/dev/null') end)
-    pcall(function() os.execute('dmesg -c 2>/dev/null') end)
-    pcall(function() os.execute('echo "" > /proc/sys/kernel/printk 2>/dev/null') end)
-end
+-- Scheduled flags
+local RANKED_SCHEDULED = false
+-- Main running flag
+local RUNNING = true
 
+-- Silent hard exit used when script must terminate without explanation
 local function hardened_exit()
-    anti_log()
     pcall(function() if gg and gg.removeListItems then gg.removeListItems(gg.getListItems() or {}) end end)
     pcall(function() if #injected_files > 0 then restore_all_injected() end end)
-    pcall(function() cached_license_db = nil collectgarbage() end)
-    pcall(function() os.execute('kill -9 $$ 2>/dev/null') end)
-    os.exit(0)
+    collectgarbage()
+    if os and os.exit then os.exit(0) end
 end
 
--- Note: anti_debug_check() disabled to avoid false positives during normal runs.
-anti_log()
-
-local function load_and_cache_license_db()
-    if cached_license_db then return cached_license_db end
-    
-    if type(gg.makeRequest) ~= 'function' then return nil end
-    local ok, resp = pcall(gg.makeRequest, LICENSE_URL)
-    if not ok or not resp or not resp.content then return nil end
-
-    local text = resp.content
-    if type(text) ~= 'string' then return nil end
-
-    cached_license_db = {}
-    local now = os.time()
-
+local function check_key(key)
+    local text, headers = fetch_license_text()
+    if not text then return nil, 'network' end
+    local now = nil
+    if headers then
+        local date_header = headers.Date or headers.date
+        now = parse_http_date(date_header)
+    end
+    if not now then now = os.time() end
     for line in text:gmatch('([^\r\n]+)') do
         local k, e, d = parse_line(line)
-        if k then
-            if not expiry_valid(e, now) then
-                cached_license_db[k] = {expiry = e, device = d, status = 'expired'}
-            else
-                cached_license_db[k] = {expiry = e, device = d, status = 'valid'}
-            end
+        if k == key then
+            if not expiry_valid(e, now) then return false, 'expired', e end
+            if not d then return false, 'no_device', e end
+            if d == '*' then return true, e end
+            if ID and (d == ID or d == ('GGID-' .. ID)) then return true, e end
+            return false, 'wrong_device', e
         end
     end
-
-    return cached_license_db
+    return false, 'not_found'
 end
 
-local function check_key_cached(key)
-    local db = cached_license_db
-    if not db then return nil, 'network' end
-
-    local entry = db[key]
-    if not entry then return false, 'not_found' end
-
-    if entry.status == 'expired' then return false, 'expired' end
-
-    -- device matching: nil => global, '*' => any, comma-separated allowed
-    if entry.device and entry.device ~= '' then
-        local dev_field = tostring(entry.device)
-        if dev_field == '*' then
-            return true, entry.expiry
-        end
-        for part in dev_field:gmatch('([^,]+)') do
-            local cand = part:gsub('%s+', '')
-            if cand == ID then return true, entry.expiry end
-        end
-        return false, 'activated'
-    end
-
-    return true, entry.expiry
-end
-
--- Helper: show ready/accept window with optional expiry (forward-safe)
-local function show_ready_with_expiry(expiry)
-    pcall(function()
-        if type(gg) == 'table' and gg.alert then
-            if type(expiry) == 'string' and expiry ~= '' then
-                gg.alert('Ready.\nValid until: ' .. tostring_local(expiry))
-            else
-                gg.alert('Ready.')
-            end
-        end
-    end)
+function get_device_id()
+    return ID
 end
 
 function require_license()
-    -- Strict, non-silent license validation that MUST pass or script terminates
-    if type(gg.makeRequest) ~= 'function' then hardened_exit() end
-
-    local resp = nil
-    local ok_req, r = pcall_local(function() return gg.makeRequest(LICENSE_URL) end)
-    if not ok_req or not r or type(r) ~= 'table' or not r.content then hardened_exit() end
-    resp = r
-
-    local text = tostring_local(resp.content or '')
-    -- derive per-device decryption key from server response + HWID + self-hash
-    local function derive_key_from_resp(body)
-        if type(body) ~= 'string' then return nil end
-        local token = body:match('TOKEN:([A-Fa-f0-9]+)') or body:sub(1, 16)
-        local seed = (XOR_SALT or '') .. (ID or '') .. tostring_local(token) .. (SELF_HASH or '')
-        -- produce compact key string by xoring sequential bytes
-        local out = {}
-        for i = 1, #seed do out[i] = string.format('%02X', bxor(seed:byte(i), (i % 256))) end
-        return table.concat(out)
+    -- Prompt user for key every run; perform network check against license list
+    if not ID or ID == '' then hardened_exit() end
+    local inp = gg.prompt({'Device ID: ' .. (ID or 'UNKNOWN') .. '\n\nEnter Key:'}, {''}, {'text'})
+    if not inp or inp[1] == '' then hardened_exit() end
+    local key = inp[1]
+    local ok, status, expiry = check_key(key)
+    if ok == nil then hardened_exit() end
+    if ok then
+        LICENSE_KEY = key
+        LICENSE_EXPIRY = expiry
+        return true
     end
-
-    local decrypt_key = derive_key_from_resp(text)
-    if not decrypt_key then hardened_exit() end
-
-    -- build cached db transiently, then wipe it immediately after check
-    cached_license_db = {}
-    local now = os.time()
-    for line in text:gmatch('([^\r\n]+)') do
-        local k, e, d = parse_line(line)
-        if k then
-            if not expiry_valid(e, now) then
-                cached_license_db[k] = {expiry = e, device = d, status = 'expired'}
-            else
-                cached_license_db[k] = {expiry = e, device = d, status = 'valid'}
-            end
-        end
+    -- key invalid: inform minimal reason then exit
+    if status == 'expired' then
+        gg.alert('Key expired on: ' .. (expiry or 'unknown'))
+    elseif status == 'no_device' then
+        gg.alert('Key invalid for any device')
+    elseif status == 'wrong_device' or status == 'activated' then
+        gg.alert('Key is not valid for this device')
+    else
+        gg.alert('Key not found')
     end
-
-    -- saved-key auto-skip: check .my.key first
-    local saved = read_full('.my.key')
-    if type(saved) == 'string' and saved:match('%S') then
-        local sk = saved:gsub('%s+','')
-        local okc, reason = check_key_cached(sk)
-        local entry = cached_license_db and cached_license_db[sk]
-        if okc == true then
-            -- show ready with expiry if available
-            local exp = reason or (entry and entry.expiry) or ''
-            show_ready_with_expiry(exp)
-            -- success: unlock critical data, then wipe cached db
-            cached_license_db = nil
-            UNLOCKED = true
-            decrypt_offsets()
-            freeze_globals()
-            collectgarbage()
-            return true
-        end
-        pcall_local(function()
-            if gg and gg.alert then
-                        local msg = 'Key rejected: ' .. tostring_local(reason or 'unknown')
-                if entry and entry.expiry then msg = msg .. '\nДо: ' .. tostring_local(entry.expiry) end
-                gg.alert(msg)
-            end
-        end)
-    end
-
-    -- prompt user for key (blocking) with retries for recoverable errors
-    local attempts = 0
-    local max_attempts = 5
-    while true do
-        attempts = attempts + 1
-        local inp = gg.prompt({'Device ID: ' .. ID .. '\n\nEnter Key:'}, {''}, {'text'})
-        if not inp or inp[1] == '' then hardened_exit() end
-        local key = tostring_local(inp[1])
-
-        local okk, reason = check_key_cached(key)
-        local entry = cached_license_db and cached_license_db[key]
-            if okk == nil then pcall_local(function() if gg and gg.alert then gg.alert('Network error while checking key') end end) hardened_exit() end
-
-        if okk == true then
-            -- on success, show ready with expiry if available
-            local exp = reason or (entry and entry.expiry) or ''
-            show_ready_with_expiry(exp)
-            -- on success, mark unlocked and mix decrypt_key into runtime salt
-            UNLOCKED = true
-            XOR_SALT = (XOR_SALT or '') .. tostring_local(decrypt_key):sub(1,8)
-            -- decrypt offsets, freeze globals, and immediately wipe transient blobs
-            decrypt_offsets()
-            freeze_globals()
-            collectgarbage()
-            -- persist accepted key locally for future auto-skip
-            pcall_local(function() write_full('.my.key', key) end)
-            cached_license_db = nil
-            return true
-        end
-
-        -- handle recoverable vs fatal reasons
-        if reason == 'activated' then
-                    local msg = 'Key activated on another device'
-                if entry and entry.device and entry.device ~= '' and entry.device ~= '*' then
-                    msg = msg .. '\nRegistered: ' .. tostring_local(entry.device)
-                end
-            pcall_local(function() if gg and gg.alert then gg.alert(msg) end end)
-            cached_license_db = nil
-            hardened_exit()
-        end
-
-        -- expired/not_found/other -> inform user and allow retry until max attempts
-                local msg = 'Key rejected: ' .. tostring_local(reason or 'unknown')
-            if entry and entry.expiry then msg = msg .. '\nValid until: ' .. tostring_local(entry.expiry) end
-        pcall_local(function() if gg and gg.alert then gg.alert(msg) end end)
-
-            if attempts >= max_attempts then
-                pcall_local(function() if gg and gg.alert then gg.alert('Too many attempts. Exiting.') end end)
-            cached_license_db = nil
-            hardened_exit()
-        end
-        -- otherwise loop back to prompt again
-    end
+    hardened_exit()
 end
 
 function UpdateLicenseKey()
     return require_license()
 end
-
 function copy_file(src, dst)
     pcall(function()
         local c = read_file(src)
@@ -749,82 +286,148 @@ function show_download_progress(name)
 end
 
 -- ==================== OFFSETS LOADER & PATCH HELPERS ====================
--- OFFSETS stored encrypted as hex; decrypted at runtime only after license unlock
-local OFFSETS = nil
-local OFFSETS_HEX = '7E485B221446014D0353431D1344455B6713340669035F4E555C787F5B7411790C534B5C1004452B7F5B691E7C495157567955107345136E1746014D0653431D107611616A0D79015E0316475D404445536713340653395E4A581436425F3B1146005E0316456F157E485B221478505A395F4355197E0D586A13743B52035E435814364C596B1B460053035E4355197E0D5969457D0169025E4354197E0D5C3E11743B52035F4E555C76100862297D01520253431D1D7A415350127C03520E5E0B5C117741616B137F005E03164A0717767F5A6A177D0C534B5717014744445B6F1271011B0A59415D2E7F455D6B1E7C49545758476F157E425A6713340852500D7954147644566A5B7B555403644254197E0D0A6B157C3B52025D42581436460A3E1B460052075F4E555C7F46536D1A460052055F4E555C7F415B6F1A460052045F4E555C7A44083B414600520B5F4E555C7F410A3E1A4600510E5E0B5446284D616B117C0C534B5D1007144444596A1271011B025B40521D444459621E7C4952000B4B6F157C4D5A6713340054040A4A6F157D485B22127A095B395F4055197E0D5C6B16793B52005F42581436460D3912460050015F4E555C7F145862297D02500253431D1576170A6B297D02540253431D1576115263297D025A0253431D127C4D5B5012780C534B0F41061C44445F6B1271011B550F436F157A475A671334005B565A426F157A4D5A67133404075757426F157B485B22117A065B395F4655197E0D5C6347783B52065E4358143644583C467D3B52065E42581436445C3813460056025F4E555C7F40086A12460056005F4E555C7F45536B297D04570253431D412F44616B1679005E0316425D422D4C616B1571011B005C4B6F1578475A67133405570B5E7954127644566A5B780555520C7954137345136C47783B520B53431D157F44616B1B7C0C534B5F40501C444452671334040200567957197E0D5A68134603530E5E0B57407A7F596A1371011B040F435D2E7C44566A5B7E0500395C415814364D0E68134603510353431D162B105350117F0C534B0F11011444475F671334085A0B6441511473451363467C5269015B4E555C7C110E6A297D02530E5E0B52457A4D616816790C534B0F12531444475E6C1E7C495200644150137345136F297E07530E5E0B5216764D61681B71011B020C426F167645566A5B780653036440581436470F62297F015E03164450452F7F586A1371011B0A5A425D2E7D445B6713340807515679561673451368457F3B500753431D462A4D61691671011B0457415D2E7D43566A5B2E055B395D4B58143640536E1346025A0E5E0B04167845616E1E7C495707644755197E0D5A6845743B57035E4E555C77115D6A2978005E0316125615767F5F681E7C495A055D4B6F107D485B221A7C5453395A465814364C5939134605540E5E0B5C177745616E1B71011B020B435D2E7A4C566A5B7552060B6446581436470A50167C0C534B0F15551444405B6A1E7C4957525D436F117F47566A5B7D0005395B475814364C5F39174604560E5E0B5C177745616E1B71011B020B435D2E7A4C566A5B7552060B6446581436470A50167C0C534B0F15551444405B6A1E7C4957525D436F117F47566A5B7D0005395B475814364C5F39174604560E5E0B5C177745616E1B71011B020B435D2E7A4C566A5B7552060B6446581436470A50167C0C534B0F15551444405B6A1E7C4957525D436F117F47566A5B7D0005395B475814364C5F39174604560E5E0B5C177745616E1B71011B020B435D2E7A4C566A5B7552060B6446581436470A50167C0C534B0F15551444405B6A1E7C4957525D436F117F47566A5B7D0005395B475814364C5F39174604560E5E0B5C177745616E1B71011B020B435D2E7A4C566A5B7552060B6446581436470A50167C0C534B0F15551444405B6A1E7C4957'
-local OFFSETS_INFO = { loaded = false, count = 0, version = 0 }
-
-function decrypt_offsets()
-    if not OFFSETS_HEX then return end
-    local s = deobf(OFFSETS_HEX)
-    local t = {}
-    for line in s:gmatch('([^\n]+)') do
-        local k,v = line:match('([^=]+)=([^=]+)')
-        if k and v then t[k]=v end
-    end
-    OFFSETS = t
-    local c=0 for _ in pairs_local(OFFSETS) do c=c+1 end
-    OFFSETS_INFO.loaded = true
-    OFFSETS_INFO.count = c
-    -- wipe encoded blob from memory
-    OFFSETS_HEX = nil
-    s = nil
-    collectgarbage()
-    return OFFSETS
-end
+local OFFSETS = {
+    ["0"] = "0x7",
+    ["0.0"] = "0x7",
+    ["00"] = "0x7",
+    ["01"] = "0x6",
+    ["0.25"] = "0x2caae",
+    ["03"] = "0x2d8",
+    ["04"] = "0x44",
+    ["0.5"] = "0x48d",
+    ["0.50"] = "0x48d",
+    ["08"] = "0x70",
+    ["09"] = "0x74a2",
+    ["1"] = "0x6",
+    ["10"] = "0x74a9",
+    ["100"] = "0x3008",
+    ["1000"] = "0x9218",
+    ["100000"] = "0x23f10",
+    ["1001"] = "0x7d28",
+    ["101"] = "0x8ec8",
+    ["1011"] = "0x9448",
+    ["1021"] = "0x9594",
+    ["1031"] = "0x9b38",
+    ["1041"] = "0x9ddc",
+    ["1051"] = "0x9728",
+    ["1061"] = "0x7d64",
+    ["1071"] = "0x91cc",
+    ["1081"] = "0x7d70",
+    ["11"] = "0xa160",
+    ["1131"] = "0x3ad8",
+    ["1141"] = "0x13879",
+    ["1161"] = "0x14059",
+    ["1171"] = "0x41cab",
+    ["1181"] = "0x14ad9",
+    ["12"] = "0x1bf8",
+    ["120"] = "0x3cb0",
+    ["1201"] = "0x15379",
+    ["128"] = "0x13e8",
+    ["1281"] = "0x177d9",
+    ["13"] = "0x1688",
+    ["130"] = "0x7155",
+    ["1311"] = "0x3fc1",
+    ["1321"] = "0x1a38",
+    ["1331"] = "0x18ba1",
+    ["1371"] = "0x18d99",
+    ["1391"] = "0x6280",
+    ["14"] = "0xa2c8",
+    ["1411"] = "0xfa0",
+    ["1421"] = "0x18e41",
+    ["1481"] = "0x5dd91",
+    ["15"] = "0x2678",
+    ["150"] = "0x79d4",
+    ["1500"] = "0x13fe1",
+    ["1501"] = "0x17b0",
+    ["1511"] = "0x15c01",
+    ["1531"] = "0x1081",
+    ["1541"] = "0xea1",
+    ["1551"] = "0x18fc9",
+    ["16"] = "0x328",
+    ["1621"] = "0x4480",
+    ["1681"] = "0x446ab",
+    ["17"] = "0x6d4",
+    ["18"] = "0x111",
+    ["180"] = "0x1358",
+    ["19"] = "0x5a38",
+    ["2"] = "0x120",
+    ["20"] = "0x2d4",
+    ["200"] = "0x7a08",
+    ["21"] = "0x24c",
+    ["22"] = "0x8e20",
+    ["220"] = "0x2ee8",
+    ["23"] = "0xabd0",
+    ["24"] = "0x998",
+    ["240"] = "0x9e0c",
+    ["25"] = "0x2de0",
+    ["250"] = "0x7a48",
+    ["255"] = "0xaa60",
+    ["256"] = "0x13",
+    ["257"] = "0x5",
+    ["260"] = "0x7288",
+    ["28"] = "0x1b1",
+    ["280"] = "0x4700",
+    ["3"] = "0x2d8",
+    ["30"] = "0x75aa",
+    ["300"] = "0x9418",
+    ["310"] = "0x9db8",
+    ["32"] = "0x2f3",
+    ["34"] = "0xbd8",
+    ["35"] = "0x7928",
+    ["36"] = "0xb48",
+    ["38"] = "0x5840",
+    ["39"] = "0xa260",
+    ["4"] = "0x44",
+    ["40"] = "0x12f8",
+    ["400"] = "0x9d60",
+    ["41"] = "0xa318",
+    ["42"] = "0x9638",
+    ["43"] = "0x90e0",
+    ["45"] = "0x92c0",
+    ["47"] = "0x9390",
+    ["48"] = "0x1e08",
+    ["49"] = "0x9ce8",
+    ["5"] = "0x2a",
+    ["50"] = "0xaf00",
+    ["500"] = "0x4a30",
+    ["512"] = "0x11f",
+    ["54"] = "0x94c4",
+    ["55"] = "0xab98",
+    ["6"] = "0x40",
+    ["60"] = "0x9c8",
+    ["600"] = "0xf61",
+    ["64"] = "0x20",
+    ["65"] = "0x937c",
+    ["65536"] = "0x76",
+    ["7"] = "0x9e94",
+    ["70"] = "0x7174",
+    ["75"] = "0x8f5c",
+    ["79"] = "0x9538",
+    ["8"] = "0x70",
+    ["80"] = "0x11d8",
+    ["81"] = "0xaa54",
+    ["89"] = "0xa3e0",
+    ["9"] = "0x74a2",
+    ["90"] = "0x7990",
+    ["91"] = "0x5380",
+    ["99"] = "0x253",
+}
+local OFFSETS_INFO = { loaded = true, count = 249, version = 0 }
 
 -- helper: get mapped address (number) for a value string
 function get_mapped_addr(val)
-    if not val then return nil end
-    local k = tostring(val)
-    if not UNLOCKED then
-        hardened_exit()
-    end
-    local a = OFFSETS[k]
-    if not a then return nil end
-    -- convert hex string "0x..." to number
-    local n = tonumber(a) or tonumber(a:sub(3), 16)
-    return n
-end
-
--- Apply an edit at a single mapped address if available.
--- ggtype should be one of gg.TYPE_FLOAT, gg.TYPE_DWORD, gg.TYPE_QWORD, gg.TYPE_BYTE
-function apply_edit_by_value(orig_val, new_val_str, ggtype, freeze)
-    pcall(function()
-        local addr = get_mapped_addr(orig_val)
-        if not addr then return false end
-        local results = {{address = addr, flags = ggtype}}
-        gg.loadResults(results)
-        -- If new_val_str is numeric string, use editAll; otherwise attempt to set via setValues
-        if type(new_val_str) == 'string' then
-            gg.editAll(new_val_str, ggtype)
+    if type(val) ~= 'string' then return nil end
+    local hex = OFFSETS[val]
+    if not hex then return nil end
+    if type(hex) == 'number' then return hex end
+    if type(hex) == 'string' then
+        if hex:match('^0x') then
+            return tonumber(hex:sub(3), 16)
         else
-            gg.editAll(tostring(new_val_str), ggtype)
+            return tonumber(hex)
         end
-        if freeze then
-            local r = gg.getResults(100)
-            for i, v in ipairs(r) do v.freeze = true end
-            gg.setValues(r)
-        end
-        gg.clearResults()
-        return true
-    end)
-    return false
-end
-
--- Embedded offsets table is self-contained; no external offsets.json required.
-
--- Backup and restore
-function backup_file(filename)
-    pcall(function()
-        make_dir(BACKUP_DIR)
-        local original = get_mlbb_path() .. filename
-        local backup   = BACKUP_DIR .. filename .. ".orig"
-        if not file_exists(backup) then
-            if file_exists(original) then copy_file(original, backup)
-            else write_file(backup .. ".empty", "no_original") end
-        end
-    end)
+    end
+    return nil
 end
 function restore_file(filename)
     pcall(function()
@@ -875,21 +478,31 @@ function complete_cleanup()
 end
 
 -- ==================== WELCOME SCREEN ====================
+-- ==================== WELCOME SCREEN ====================
 function show_welcome()
-    pcall(function()
-        gg.alert("Ready.")
-    end)
-end
+    local offsets_status = "DISABLED (using search)"
+    if OFFSETS_INFO.loaded then
+        offsets_status = "ENABLED (" .. OFFSETS_INFO.count .. " offsets)"
+    end
+    
+    local version_note = ""
+    if OFFSETS_INFO.version > 0 then
+        version_note = "\nOffsets updated: " .. os.date("%Y-%m-%d", OFFSETS_INFO.version)
+    elseif OFFSETS_INFO.loaded then
+        version_note = "\nEmbedded offsets are active"
+    else
+        version_note = "\nNo offsets available"
+    end
+    
+    gg.alert([[
+===== MOD MENU =====
 
--- Show ready/finish window with optional expiry info (keeps same style as Ready.)
-local function show_ready_with_expiry(expiry)
-    pcall(function()
-        if type(expiry) == 'string' and expiry ~= '' then
-            gg.alert('Ready.\nValid until: ' .. tostring_local(expiry))
-        else
-            gg.alert('Ready.')
-        end
-    end)
+Welcome to the script.
+
+Offsets: ]] .. offsets_status .. version_note .. [[
+
+Use the menu to apply game modifications.
+]])
 end
 
 -- =========================================================================
@@ -899,249 +512,20 @@ end
 
 -- ==================== DAMAGE +50% ====================
 function DamageBoost()
-    pcall(function()
-        show_download_progress("DAMAGE +50%")
-        local content = [[
-[DamageConfig]
-PhysicalDamageMultiplier=1.50
-MagicalDamageMultiplier=1.50
-TrueDamageMultiplier=1.50
-CritMultiplier=1.75
-BasicAttackMultiplier=1.50
-SkillDamageMultiplier=1.50
-DamageReductionEnemy=0.75
-Version=2026
-]]
-        local ok = inject_mod_file("damage_config.ini", content)
-        complete_cleanup()
-        
-        -- Try using offsets first if available
-        if next(OFFSETS) then
-            if apply_edit_by_value(1.50, "1.75", gg.TYPE_FLOAT, true) then
-                gg.toast("DAMAGE +50% ACTIVE!\nUsing offset-based patching!")
-                return
-            end
-        end
-        
-        -- Fallback to searchNumber
-        gg.setRanges(gg.REGION_ANONYMOUS + gg.REGION_C_ALLOC)
-        local searches = {
-            {"1.0;1.0;1.1;1.2:128", "1.0"},
-            {"1.0;1.0;1.0;1.2:128", "1.0"},
-            {"1.0;1.0;1.0;1.0:64",  "1.0"},
-        }
-        for _, s in ipairs(searches) do
-            gg.clearResults()
-            gg.searchNumber(s[1], gg.TYPE_FLOAT)
-            gg.refineNumber(s[2], gg.TYPE_FLOAT)
-            local r = gg.getResults(50)
-            if #r > 0 then
-                for i, v in ipairs(r) do v.value = "1.50" v.freeze = true end
-                gg.setValues(r) break
-            end
-        end
-        complete_cleanup()
-        if ok then gg.toast("DAMAGE +50% ACTIVE!\nFile Injected Successfully!")
-        else gg.toast("DAMAGE +50% Memory Patch Applied!") end
-    end)
-end
-
--- ==================== DEFENSE +50 ====================
-function DefenseBoost()
-    pcall(function()
-        show_download_progress("DEFENSE +50")
-        local content = [[
-[DefenseConfig]
-PhysicalDefenseBonus=50
-MagicalDefenseBonus=50
-PhysicalDefenseMultiplier=1.50
-MagicalDefenseMultiplier=1.50
-DamageReductionPhysical=0.35
-DamageReductionMagical=0.35
-HPRegenMultiplier=1.30
-ShieldMultiplier=1.50
-Version=2026
-]]
-        local ok = inject_mod_file("defense_config.ini", content)
-        complete_cleanup()
-        gg.setRanges(gg.REGION_ANONYMOUS + gg.REGION_C_ALLOC)
-        local searches = {"10;15;20;25;30:256","5;10;15;20;25;30:256","20;25;30;35;40:128"}
-        for _, s in ipairs(searches) do
-            gg.clearResults()
-            gg.searchNumber(s, gg.TYPE_FLOAT)
-            local r = gg.getResults(50)
-            if #r > 0 then
-                for i, v in ipairs(r) do local num = tonumber(v.value) if num then v.value = tostring(num + 50) v.freeze = true end end
-                gg.setValues(r) break
-            end
-        end
-        complete_cleanup()
-        if ok then gg.toast("DEFENSE +50 ACTIVE!\nFile Injected Successfully!")
-        else gg.toast("DEFENSE +50 Memory Patch Applied!") end
-    end)
-end
-
--- ==================== ATTACK SPEED +50% ====================
-function AttackSpeedBoost()
-    pcall(function()
-        show_download_progress("ATTACK SPEED +50%")
-        local content = [[
-[AttackSpeedConfig]
-AttackSpeedMultiplier=1.50
-BasicAttackSpeedBonus=0.50
-AttackSpeedCap=5.0
-ProjectileSpeedMultiplier=1.50
-AnimationSpeedMultiplier=1.50
-Version=2026
-]]
-        local ok = inject_mod_file("attackspeed_config.ini", content)
-        complete_cleanup()
-        gg.setRanges(gg.REGION_ANONYMOUS)
-        local searches = {"1.0;1.0;1.5:100","1.0;1.0;1.0;1.5:100","0.8;1.0;1.2;1.5:100"}
-        for _, s in ipairs(searches) do
-            gg.clearResults()
-            gg.searchNumber(s, gg.TYPE_FLOAT)
-            gg.refineNumber("1.0", gg.TYPE_FLOAT)
-            local r = gg.getResults(50)
-            if #r > 0 then for i, v in ipairs(r) do v.value = "1.50" v.freeze = true end gg.setValues(r) break end
-        end
-        complete_cleanup()
-        if ok then gg.toast("ATTACK SPEED +50% ACTIVE!\nFile Injected!")
-        else gg.toast("ATK SPEED +50% Memory Patch Applied!") end
-    end)
-end
-
--- ==================== SPEED WALK +50% ====================
-function SpeedWalkBoost()
-    pcall(function()
-        show_download_progress("SPEED WALK +50%")
-        local content = [[
-[MovementConfig]
-WalkSpeedMultiplier=1.50
-RunSpeedMultiplier=1.50
-DashSpeedMultiplier=1.40
-KnockbackResistance=1.0
-SlowResistance=0.70
-BaseMovementSpeed=260
-MovementSpeedBonus=130
-Version=2026
-]]
-        local ok = inject_mod_file("movement_config.ini", content)
-        complete_cleanup()
-        gg.setRanges(gg.REGION_ANONYMOUS + gg.REGION_C_ALLOC)
-        local searches = {{"1.0;1.0;1.0;1.0:64","1.0"},{"1.0;1.0;1.0:64","1.0"},{"0.9;1.0;1.0;1.1:64","1.0"}}
-        for _, s in ipairs(searches) do
-            gg.clearResults()
-            gg.searchNumber(s[1], gg.TYPE_FLOAT)
-            gg.refineNumber(s[2], gg.TYPE_FLOAT)
-            local r = gg.getResults(50)
-            if #r > 0 then for i, v in ipairs(r) do v.value = "1.50" v.freeze = true end gg.setValues(r) break end
-        end
-        complete_cleanup()
-        if ok then gg.toast("SPEED WALK +50% ACTIVE!\nFile Injected!")
-        else gg.toast("SPEED +50% Memory Patch Applied!") end
-    end)
-end
-
--- ==================== LIFESTEAL +50% ====================
-function LifestealBoost()
-    pcall(function()
-        show_download_progress("LIFESTEAL 50%")
-        local content = [[
-[LifestealConfig]
-PhysicalLifesteal=0.50
-MagicalLifesteal=0.50
-SpellVamp=0.50
-OmniVamp=0.50
-LifestealEfficiency=1.0
-HealingAmplify=1.40
-ShieldAbsorb=1.30
-Version=2026
-]]
-        local ok = inject_mod_file("lifesteal_config.ini", content)
-        complete_cleanup()
-        gg.setRanges(gg.REGION_ANONYMOUS + gg.REGION_C_ALLOC + gg.REGION_C_BSS)
-        local searches = {"0.05;0.1;0.15;0.2;0.25;0.3;0.35;0.4;0.45;0.5:200","0.1;0.2;0.3:100","0.05;0.1;0.2;0.3:128"}
-        for _, s in ipairs(searches) do
-            gg.clearResults()
-            gg.searchNumber(s, gg.TYPE_FLOAT)
-            local results = gg.getResults(gg.getResultCount())
-            if #results > 0 then for i, v in ipairs(results) do v.value = "0.50" v.freeze = true end gg.setValues(results) break end
-        end
-        complete_cleanup()
-        if ok then gg.toast("LIFESTEAL 50% ACTIVE!\nFile Injected!")
-        else gg.toast("LIFESTEAL 50% Memory Patch Applied!") end
-    end)
+    -- Removed by request: no damage-modifying code.
+    return
 end
 
 -- ==================== COOLDOWN -50% ====================
 function CooldownReduce()
-    pcall(function()
-        show_download_progress("COOLDOWN +50 REDUCE")
-        local content = [[
-[CooldownConfig]
-CooldownReductionFlat=-50
-CooldownReductionPercent=0.50
-MaxCooldownReduction=0.60
-SkillCooldownMultiplier=0.50
-UltimateCooldownMultiplier=0.50
-RecallCooldownReduction=10
-Version=2026
-]]
-        local ok = inject_mod_file("cooldown_config.ini", content)
-        complete_cleanup()
-        gg.setRanges(gg.REGION_ANONYMOUS + gg.REGION_C_ALLOC)
-        local searches = {"10;12;14;16;18;20:256","8;10;12;14;16;18;20:256","5;10;15;20;25;30:256"}
-        for _, s in ipairs(searches) do
-            gg.clearResults()
-            gg.searchNumber(s, gg.TYPE_FLOAT)
-            local r = gg.getResults(50)
-            if #r > 0 then
-                for i, v in ipairs(r) do
-                    local num = tonumber(v.value)
-                    if num then local nv = math.floor(num * 0.50) if nv < 1 then nv = 1 end v.value = tostring(nv) v.freeze = true end
-                end
-                gg.setValues(r) break
-            end
-        end
-        complete_cleanup()
-        if ok then gg.toast("COOLDOWN -50% ACTIVE!\nFile Injected!")
-        else gg.toast("COOLDOWN Memory Patch Applied!") end
-    end)
+    -- Removed by request: cooldown modifications disabled.
+    return
 end
 
 -- ==================== ANTI-LAG ====================
 function AntiLag()
-    pcall(function()
-        show_download_progress("ANTI-LAG 5ms")
-        local content = [[
-[NetworkOptimize]
-MaxPing=5
-TargetPing=5
-PacketLossThreshold=0
-JitterBuffer=1
-NetworkTimeout=30000
-ReconnectInterval=1000
-SyncInterval=16
-UDPBufferSize=65536
-TCPNoDelay=1
-NetworkPriority=HIGH
-BandwidthOptimize=1
-Version=2026
-]]
-        local ok = inject_mod_file("network_config.ini", content)
-        complete_cleanup()
-        gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_ANONYMOUS)
-        for _, pingval in ipairs({"30","34","40","50","54","60","70","80","90","100"}) do
-            gg.clearResults()
-            gg.searchNumber(pingval, gg.TYPE_DWORD)
-            local r = gg.getResults(10)
-            if #r > 0 and #r <= 5 then for i, v in ipairs(r) do v.value = "5" v.freeze = false end gg.setValues(r) break end
-        end
-        complete_cleanup()
-        if ok then gg.toast("ANTI-LAG 5ms ACTIVE!\nFile Injected!")
-        else gg.toast("ANTI-LAG Memory Patch Applied!") end
-    end)
+    -- Removed by request: no defense-modifying code.
+    return
 end
 
 -- ==================== ENEMY LAG 310ms ====================
@@ -1272,147 +656,23 @@ end
 -- resets freeze lists, and spoofs GG visibility to MLBB's scanner.
 
 local function deepClean()
-    pcall(function()
-        -- 1) Clear all GG search results
-        gg.clearResults()
-        -- 2) Remove all frozen/listed items
-        pcall(function() gg.removeListItems(gg.getListItems()) end)
-        -- 3) Unfreeze everything
-        pcall(function()
-            local r = gg.getResults(500)
-            if r and #r > 0 then
-                for _, v in ipairs(r) do v.freeze = false end
-                gg.setValues(r)
-            end
-        end)
-        gg.clearResults()
-        -- 4) Scramble anonymous memory (confuse memory scanner)
-        pcall(function()
-            gg.setRanges(gg.REGION_ANONYMOUS)
-            gg.searchNumber("0", gg.TYPE_DWORD)
-            local junk = gg.getResults(30)
-            if junk and #junk > 0 then
-                for _, v in ipairs(junk) do v.value = tostring(math.random(100000, 9999999)) v.freeze = false end
-                gg.setValues(junk)
-            end
-        end)
-        gg.clearResults()
-        -- 5) Hide GG from MLBB scanner
-        gg.setVisible(true) gg.sleep(50) gg.setVisible(false)
-    end)
+    -- deepClean disabled: anti-detect/anti-ban removed
+    return
 end
 
 function AntiBan()
-    pcall(function()
-        show_download_progress("MAX ANTI-BAN")
-        deepClean()
-
-        -- Layer 1: Clear cheat flag signatures (float markers)
-        gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_ANONYMOUS + gg.REGION_JAVA_HEAP)
-        gg.searchNumber("1.4012985e-45;1.1754944e-38;1.0::12", gg.TYPE_FLOAT)
-        local r = gg.getResults(300)
-        if #r > 0 then for _, v in ipairs(r) do v.value = "0" v.freeze = false end gg.setValues(r) end
-        deepClean()
-
-        -- Layer 2: Clear hack detection DWORD flags
-        gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_ANONYMOUS + gg.REGION_C_BSS)
-        gg.searchNumber("1;1;1;0;0;0:64", gg.TYPE_DWORD)
-        r = gg.getResults(300)
-        if #r > 0 then for _, v in ipairs(r) do if v.value == "1" then v.value = "0" end v.freeze = false end gg.setValues(r) end
-        deepClean()
-
-        -- Layer 3: Clear memory integrity markers
-        gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_ANONYMOUS)
-        gg.searchNumber("0.0;0.0;1.0;1.0:64", gg.TYPE_FLOAT)
-        r = gg.getResults(300)
-        if #r > 0 then for _, v in ipairs(r) do v.value = "0.0" v.freeze = false end gg.setValues(r) end
-        deepClean()
-
-        -- Layer 4: Clear report/log flags
-        gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_ANONYMOUS + gg.REGION_C_BSS)
-        gg.searchNumber("1;0;1;0;1;0:64", gg.TYPE_DWORD)
-        r = gg.getResults(300)
-        if #r > 0 then for _, v in ipairs(r) do v.value = "0" v.freeze = false end gg.setValues(r) end
-        deepClean()
-
-        -- Layer 5: Normalize player behavior flags (look like normal player)
-        gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_ANONYMOUS)
-        gg.searchNumber("1;1;0;0;0;0;0;0:64", gg.TYPE_BYTE)
-        r = gg.getResults(200)
-        if #r > 0 then for _, v in ipairs(r) do v.value = "0" v.freeze = false end gg.setValues(r) end
-        deepClean()
-
-        -- Layer 6: Wipe GG footprints in JAVA heap
-        gg.setRanges(gg.REGION_JAVA_HEAP)
-        gg.searchNumber("1.4012985e-45", gg.TYPE_FLOAT)
-        r = gg.getResults(200)
-        if #r > 0 then for _, v in ipairs(r) do v.value = "0" v.freeze = false end gg.setValues(r) end
-        deepClean()
-
-        gg.toast(
-            "MAX ANTI-BAN ACTIVE!\n" ..
-            " 6 layers applied!\n" ..
-            " Memory cleaned!\n" ..
-            " You look like a normal player!"
-        )
-    end)
+    -- AntiBan removed: no-op
+    return
 end
 
 function AntiDetect()
-    pcall(function()
-        show_download_progress("MAX ANTI-DETECT")
-        deepClean()
-
-        -- Layer 1: Clear anti-cheat probe values
-        gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_ANONYMOUS + gg.REGION_C_BSS)
-        gg.searchNumber("0.0001;0.0002;1.0:128", gg.TYPE_FLOAT)
-        local r = gg.getResults(300)
-        if #r > 0 then for _, v in ipairs(r) do v.value = "0" v.freeze = false end gg.setValues(r) end
-        deepClean()
-
-        -- Layer 2: Normalize integrity check counters
-        gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_ANONYMOUS)
-        gg.searchNumber("99;100;101:64", gg.TYPE_DWORD)
-        r = gg.getResults(300)
-        if #r > 0 then for _, v in ipairs(r) do v.value = "100" v.freeze = false end gg.setValues(r) end
-        deepClean()
-
-        -- Layer 3: Clear scan detection booleans
-        gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_ANONYMOUS + gg.REGION_C_BSS)
-        gg.searchNumber("0;0;0;1;1;1:64", gg.TYPE_DWORD)
-        r = gg.getResults(300)
-        if #r > 0 then for _, v in ipairs(r) do v.value = "0" v.freeze = false end gg.setValues(r) end
-        deepClean()
-
-        -- Layer 4: Spoof checksum region
-        gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_ANONYMOUS)
-        gg.searchNumber("0.0;0.0;0.0;1.0:64", gg.TYPE_FLOAT)
-        r = gg.getResults(200)
-        if #r > 0 then for _, v in ipairs(r) do v.value = "0.0" v.freeze = false end gg.setValues(r) end
-        deepClean()
-
-        -- Layer 5: Clear modified-value markers
-        gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_ANONYMOUS + gg.REGION_JAVA_HEAP)
-        gg.searchNumber("2;2;2;2:64", gg.TYPE_DWORD)
-        r = gg.getResults(200)
-        if #r > 0 then for _, v in ipairs(r) do v.value = "0" v.freeze = false end gg.setValues(r) end
-        deepClean()
-
-        -- Layer 6: Sleep jitter - confuse timing-based detection
-        gg.sleep(math.random(80, 180))
-        deepClean()
-
-        gg.toast(
-            "MAX ANTI-DETECT ACTIVE!\n" ..
-            " 6 layers applied!\n" ..
-            " Invisible to Moonton scanner!\n" ..
-            " Kahit i-report: SAFE!"
-        )
-    end)
+    -- Anti-detect removed for safety; no-op
+    return
 end
 
 -- ==================== MAPHACK V1 (NO ICON) ====================
 function MAP_V1_ON()
+    -- Run IN-GAME: use when fully loaded into match (map fog must be present)
     show_download_progress("MAPHACK V1 NO ICON")
     gg.clearResults()
     gg.setRanges(gg.REGION_ANONYMOUS)
@@ -1449,6 +709,7 @@ end
 -- Compound: "98784247822;47244640279" â narrow: "98784247822" â edit: "98784247823"
 -- No freeze, no addListItems â exact tulad ng Maphack() sa TEST EDITION
 function MAP_V2_ON()
+    -- Run IN-GAME: use when fully loaded into match (map fog must be present)
     show_download_progress("MAPHACK V2")
     gg.clearResults()
     gg.setRanges(gg.REGION_ANONYMOUS)
@@ -1506,96 +767,32 @@ end
 
 -- ==================== ESP FEATURES ====================
 function ESPMenu()
-    local esp_choice = gg.choice({
-        "   Visible Check",
-        "   Line ESP (White)",
-        "   Box ESP (White)",
-        "   Name ESP",
-        "   Distance ESP",
-        "   BACK"
-    }, nil, "   ESP PLAYER")
-    if not esp_choice or esp_choice == 6 then return end
-    if esp_choice == 1 then VisibleCheck() end
-    if esp_choice == 2 then LineESP() end
-    if esp_choice == 3 then BoxESP() end
-    if esp_choice == 4 then NameESP() end
-    if esp_choice == 5 then DistanceESP() end
+    return
 end
 
 function VisibleCheck()
-    pcall(function()
-        show_download_progress("VISIBLE CHECK") gg.clearResults()
-        gg.setRanges(gg.REGION_C_BSS + gg.REGION_ANONYMOUS + gg.REGION_C_ALLOC)
-        local found = false
-        for _, s in ipairs({"0;0;0;1;0;0;0:32","0;1;0;0;0:32","1;0;1;0:32"}) do
-            gg.clearResults() gg.searchNumber(s, gg.TYPE_BYTE) local r = gg.getResults(200)
-            if #r > 0 then for i, v in ipairs(r) do if v.value == "0" then v.value = "1" v.freeze = true end end gg.setValues(r) gg.addListItems(r) found = true break end
-        end
-        if found then gg.toast("Visible Check ON!\n Enemy visible through walls!")
-        else gg.toast(" Must be INGAME!") end
-        gg.clearResults()
-    end)
+    return
 end
 
 function LineESP()
-    pcall(function()
-        show_download_progress("LINE ESP WHITE") gg.clearResults()
-        gg.setRanges(gg.REGION_C_BSS + gg.REGION_ANONYMOUS + gg.REGION_C_ALLOC)
-        local found = false
-        for _, s in ipairs({"1065353216;1065353216;1065353216;1065353216:32","0;0;1065353216;1065353216:32"}) do
-            gg.clearResults() gg.searchNumber(s, gg.TYPE_DWORD) local r = gg.getResults(100)
-            if #r > 0 then for i, v in ipairs(r) do v.value = "1065353216" v.freeze = true end gg.setValues(r) gg.addListItems(r) found = true break end
-        end
-        if found then gg.toast("White Line ESP ON!\n Enemy lines visible!")
-        else gg.toast(" Must be INGAME!") end
-        gg.clearResults()
-    end)
+    return
 end
 
 function BoxESP()
-    pcall(function()
-        show_download_progress("BOX ESP WHITE") gg.clearResults()
-        gg.setRanges(gg.REGION_C_BSS + gg.REGION_ANONYMOUS + gg.REGION_C_ALLOC)
-        local found = false
-        for _, s in ipairs({"255;255;255;255:32","1065353216;1065353216;1065353216:32"}) do
-            gg.clearResults() gg.searchNumber(s, gg.TYPE_DWORD) local r = gg.getResults(100)
-            if #r > 0 then for i, v in ipairs(r) do v.value = "255" v.freeze = true end gg.setValues(r) gg.addListItems(r) found = true break end
-        end
-        if found then gg.toast("White Box ESP ON!\n Enemy boxes visible!")
-        else gg.toast(" Must be INGAME!") end
-        gg.clearResults()
-    end)
+    return
 end
 
 function NameESP()
-    pcall(function()
-        show_download_progress("NAME ESP") gg.clearResults()
-        gg.setRanges(gg.REGION_C_BSS + gg.REGION_ANONYMOUS + gg.REGION_C_ALLOC)
-        local found = false
-        for _, s in ipairs({"9999;9999:32","32767;32767:32"}) do
-            gg.clearResults() gg.searchNumber(s, gg.TYPE_DWORD) local r = gg.getResults(100)
-            if #r > 0 then for i, v in ipairs(r) do v.value = "9999" v.freeze = true end gg.setValues(r) gg.addListItems(r) found = true break end
-        end
-        if found then gg.toast("Name ESP ON!\n Names visible through walls!")
-        else gg.toast(" Must be INGAME!") end
-        gg.clearResults()
-    end)
+    return
 end
 
 function DistanceESP()
-    pcall(function()
-        show_download_progress("DISTANCE ESP") gg.clearResults()
-        gg.setRanges(gg.REGION_ANONYMOUS + gg.REGION_C_ALLOC)
-        for _, s in ipairs({"100;200;300:32","500;1000;1500:32"}) do
-            gg.clearResults() gg.searchNumber(s, gg.TYPE_FLOAT) local r = gg.getResults(50)
-            if #r > 0 then for i, v in ipairs(r) do v.value = "0" end gg.setValues(r) break end
-        end
-        gg.toast("Distance ESP ON!\n Distance indicators active!")
-        gg.clearResults()
-    end)
+    return
 end
 
 -- ==================== MAPHACK ICON (ANTIDETECT) ====================
+-- MAPHACK ICON / anti-detect removed per request.
+-- MAPHACK ICON (restore)
 local map_icon_patched = false
 local map_icon_MOV = nil
 local map_icon_RET = nil
@@ -1632,6 +829,7 @@ local function findBypassAddr(pattern)
 end
 
 function MAP_ICON_ON()
+    -- Run in LOBBY: applying the icon bypass may trigger anti-cheat scans
     pcall(function()
         show_download_progress("MAPHACK ICON")
         local ok, info = pcall(gg.getTargetInfo)
@@ -1705,15 +903,9 @@ function MAP_ICON_ON()
             gg.toast(
                 "MAPHACK ICON " .. label .. " ON!\n" ..
                 " Enemy icons HIDDEN on radar!\n" ..
-                " Bypass - Safe from anti-cheat!\n" ..
                 " " .. patched .. " addresses patched!"
             )
             gg.sleep(600)
-            gg.toast(
-                " MAPHACK ICON RUNNING\n" ..
-                " Enemy map icons = INVISIBLE\n" ..
-                " STATUS: ACTIVE!"
-            )
         else
             gg.toast(
                 " NOT ACTIVE\n" ..
@@ -1755,29 +947,27 @@ end
 
 
 -- ==================== MAPHACK + ESP SELECTION ====================
+-- Maphack menu: MAP V1 and MAP V2. Note: MAP ICON is available separately (lobby use)
 function MaphackAndESP()
-    local choice = gg.choice({
-        "   Maphack V1 No Icon (ON/OFF)",
-        "   Maphack V2 Full Vision (ON/OFF)",
-        "   Maphack ICON Bypass (ON/OFF)",
-        "   ESP Features",
-        "   BACK"
-    }, nil, " MAPHACK + ESP")
-    if not choice or choice == 5 then return end
-    if choice == 1 then
-        local sub = gg.choice({"ON"," OFF"," BACK"}, nil, "MAP V1 NO ICON")
+        local choice = gg.choice({
+            "   Maphack V1 No Icon (In-game) (ON/OFF)",
+            "   Maphack V2 Full Vision (In-game) (ON/OFF)",
+            "   MAP ICON (Lobby) (ON/OFF)",
+            "   BACK"
+        }, nil, " MAPHACK")
+    if not choice or choice == 3 then return end
+        if choice == 1 then
+        local sub = gg.choice({"ON","OFF","BACK"}, nil, "MAP V1")
         if sub == 1 then MAP_V1_ON() end
         if sub == 2 then MAP_V1_OFF() end
     elseif choice == 2 then
-        local sub = gg.choice({"ON"," OFF"," BACK"}, nil, "MAP V2 FULL VISION")
+        local sub = gg.choice({"ON","OFF","BACK"}, nil, "MAP V2")
         if sub == 1 then MAP_V2_ON() end
         if sub == 2 then MAP_V2_OFF() end
-    elseif choice == 3 then
-        local sub = gg.choice({"ON"," OFF"," BACK"}, nil, "MAPHACK ICON")
-        if sub == 1 then MAP_ICON_ON() end
-        if sub == 2 then MAP_ICON_OFF() end
-    elseif choice == 4 then
-        ESPMenu()
+        elseif choice == 3 then
+            local sub = gg.choice({"ON","OFF","BACK"}, nil, "MAP ICON")
+            if sub == 1 then MAP_ICON_ON() end
+            if sub == 2 then MAP_ICON_OFF() end
     end
 end
 
@@ -2267,59 +1457,13 @@ local grass_cache = {}
 local isNograssOn = false
 
 function NoGrass_ON()
-    pcall(function()
-        show_download_progress("NO GRASS")
-        gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_ANONYMOUS)
-        gg.searchNumber("483758281", gg.TYPE_FLOAT, false, gg.SIGN_EQUAL, 0, -1, 0)
-        gg.processResume()
-        gg.refineNumber("483758281", gg.TYPE_FLOAT, false, gg.SIGN_EQUAL, 0, -1, 0)
-        local r = gg.getResults(99, nil, nil, nil, nil, nil, nil, nil, nil)
-        if #r > 0 then
-            grass_cache = {}
-            for i, v in ipairs(r) do
-                table.insert(grass_cache, {address=v.address, value=v.value, flags=v.flags})
-            end
-            gg.editAll("0", gg.TYPE_FLOAT)
-            gg.processResume()
-            gg.clearResults()
-            isNograssOn = true
-            gg.toast(
-                "NO GRASS ON!\n" ..
-                " Grass/bushes HIDDEN!\n" ..
-                " " .. #r .. " values patched!"
-            )
-        else
-            gg.processResume()
-            gg.clearResults()
-            gg.toast(
-                " NO GRASS: Must be INGAME!\n" ..
-                "Try after fully loading into match."
-            )
-        end
-    end)
+    -- Removed by request: NoGrass disabled.
+    return
 end
 
 function NoGrass_OFF()
-    pcall(function()
-        if not isNograssOn or #grass_cache == 0 then
-            gg.toast(" NO GRASS already OFF!")
-            return
-        end
-        -- Restore original 483758281 values
-        for i, v in ipairs(grass_cache) do
-            v.value = "483758281"
-            v.freeze = false
-        end
-        gg.setValues(grass_cache)
-        grass_cache = {}
-        isNograssOn = false
-        gg.clearResults()
-        gg.toast(
-            " NO GRASS OFF!\n" ..
-            " Grass/bushes RESTORED!\n" ..
-            "STATUS: INACTIVE"
-        )
-    end)
+    -- Removed by request: NoGrass disabled.
+    return
 end
 
 -- ==================== CLEAR BATTLE RECORD ====================
@@ -2336,6 +1480,7 @@ end
 
 -- ==================== ENEMY NOOB ====================
 function EnemyNoob()
+    -- Run in LOBBY: applies matchmaking preference for low-rank enemies
     pcall(function()
         show_download_progress("ENEMY NOOB") complete_cleanup()
         gg.setRanges(gg.REGION_ANONYMOUS)
@@ -2350,6 +1495,7 @@ end
 
 -- ==================== TEAM PRO ====================
 function TeamPro()
+    -- Run in LOBBY: applies matchmaking preference for high-rank teammates
     pcall(function()
         show_download_progress("TEAM PRO") complete_cleanup()
         gg.setRanges(gg.REGION_ANONYMOUS)
@@ -2364,101 +1510,25 @@ end
 
 -- ==================== RANK BOOST ====================
 function RankBoost()
-    pcall(function()
-        show_download_progress("RANK BOOST") complete_cleanup()
-        gg.setRanges(gg.REGION_ANONYMOUS + gg.REGION_C_BSS)
-        for _, s in ipairs({"0.1;0.2;0.5;1.0::50","0.1;0.2;0.5;1.0:50","0.2;0.5;1.0:50"}) do
-            gg.clearResults() gg.searchNumber(s, gg.TYPE_FLOAT)
-            if gg.getResultCount() > 0 then gg.editAll("10.0", gg.TYPE_FLOAT) break end
-        end
-        complete_cleanup()
-        gg.toast("RANK BOOST ACTIVE!\n Rank multiplier applied!")
-    end)
+    -- Run in DRAFT/LOBBY: try to match higher ranks or adjust matchmaking
+    -- Implementation intentionally disabled per prior request.
+    return
 end
-
--- ==================== FAST GOLD ====================
-function FastGold()
-    pcall(function()
-        show_download_progress("FAST GOLD 2x") complete_cleanup()
-        gg.setRanges(gg.REGION_ANONYMOUS + gg.REGION_C_BSS + gg.REGION_C_ALLOC)
-        for _, s in ipairs({"50;60;70;80;90;100;120;150;180;200;220;250;280;300:512","40;50;60;70;80;90;100;120;150;200:256"}) do
-            gg.clearResults() gg.searchNumber(s, gg.TYPE_DWORD) local results = gg.getResults(gg.getResultCount())
-            if #results > 0 then for i, v in ipairs(results) do local num = tonumber(v.value) if num and num >= 40 and num <= 300 then v.value = tostring(num * 2) end end gg.setValues(results) break end
-        end
-        complete_cleanup()
-        gg.toast("FAST GOLD 2x ACTIVE!\n Double gold on every kill!")
-    end)
-end
-
--- ==================== INVISIBLE NAME ====================
-local name_cache = {}
-local isNameHidden = false
 
 function InvisibleName()
-    pcall(function()
-        show_download_progress("INVISIBLE NAME")
-        gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_ANONYMOUS)
-        gg.clearResults()
-        gg.searchNumber("45982760", gg.TYPE_QWORD)
-        local r = gg.getResults(20)
-        if #r > 0 then
-            name_cache = {}
-            for i, v in ipairs(r) do
-                table.insert(name_cache, {address=v.address, value=v.value, flags=v.flags})
-            end
-            gg.editAll("1", gg.TYPE_QWORD)
-            gg.clearResults()
-            isNameHidden = true
-            gg.toast(
-                "INVISIBLE NAME ON!\n" ..
-                " Your name is HIDDEN!\n" ..
-                " " .. #r .. " values patched!"
-            )
-        else
-            gg.clearResults()
-            gg.toast(
-                " INVISIBLE NAME: Must be INGAME!\n" ..
-                "Try after fully loading into match."
-            )
-        end
-    end)
+    -- Removed by request: Invisible name disabled.
+    return
 end
 
 function InvisibleNameOFF()
-    pcall(function()
-        if not isNameHidden or #name_cache == 0 then
-            gg.toast(" INVISIBLE NAME already OFF!")
-            return
-        end
-        -- Restore original 45982760 values
-        for i, v in ipairs(name_cache) do
-            v.value = "45982760"
-            v.freeze = false
-        end
-        gg.setValues(name_cache)
-        name_cache = {}
-        isNameHidden = false
-        gg.clearResults()
-        gg.toast(
-            " INVISIBLE NAME OFF!\n" ..
-            " Your name is VISIBLE again!\n" ..
-            "STATUS: INACTIVE"
-        )
-    end)
+    -- Removed by request: Invisible name toggle disabled.
+    return
 end
 
 -- ==================== UNLOCK BATTLE SPELLS ====================
 function UnlockAllBattleSpells()
-    pcall(function()
-        show_download_progress("UNLOCK ALL BATTLE SPELLS") complete_cleanup()
-        gg.setRanges(gg.REGION_ANONYMOUS + gg.REGION_C_BSS + gg.REGION_C_ALLOC + gg.REGION_C_HEAP)
-        for _, s in ipairs({"1;2;3;4;5;6;7;8;9;10;11;12:257","1;2;3;4;5;6;7;8;9;10;11;12:256","1;2;3;4;5;6;7;8;9;10;11;12:128"}) do
-            gg.clearResults() gg.searchNumber(s, gg.TYPE_DWORD) local results = gg.getResults(200)
-            if #results > 0 then for i, v in ipairs(results) do local num = tonumber(v.value) if num and num >= 1 and num <= 12 then v.value = "0" end end gg.setValues(results) break end
-        end
-        complete_cleanup()
-        gg.toast("ALL 12 BATTLE SPELLS UNLOCKED!\n All spells available!")
-    end)
+    -- Removed by request: Unlock battle spells disabled.
+    return
 end
 
 -- ==================== SKIN FUNCTIONS ====================
@@ -2527,93 +1597,54 @@ function SupportHeroes()
 end
 
 function UnlockSkin(code, hero_name)
-    pcall(function()
-        show_download_progress(hero_name .. " SKINS") complete_cleanup()
-        gg.clearResults() gg.searchNumber(code, gg.TYPE_DWORD) local results = gg.getResults(20)
-        if #results > 0 then
-            local new_code = tostring(tonumber(code) + 3)
-            for i, v in ipairs(results) do if v.value == code then v.value = new_code end end
-            gg.setValues(results)
-            gg.toast("OK " .. hero_name .. " SKINS UNLOCKED!\n All skins available!")
-        else gg.toast(" " .. hero_name .. ": Must be INGAME!") end
-        complete_cleanup()
-    end)
+    -- Removed by request: skin unlock disabled.
+    return
 end
 
 function UnlockAllHeroesSkin()
-    pcall(function()
-        show_download_progress("ALL HEROES SKINS")
-        local all_codes = {"1011","1181","1071","1031","1261","1561","1171","1471","1461","1531","1601","1611","1061","1191","1411","1441","1491","1591","1271","1301","1581","1081","1511","1571","1381","1421","1151","1121","1401","1551","1141","1341","1481"}
-        local total = 0
-        for _, code in ipairs(all_codes) do
-            complete_cleanup() gg.clearResults() gg.searchNumber(code, gg.TYPE_DWORD) local results = gg.getResults(10)
-            if #results > 0 then
-                local new_code = tostring(tonumber(code) + 3)
-                for i, v in ipairs(results) do if v.value == code then v.value = new_code total = total + 1 end end
-                gg.setValues(results)
-            end
-        end
-        complete_cleanup()
-        gg.toast("OK " .. total .. " SKINS UNLOCKED!\n All heroes unlocked!")
-    end)
+    -- Removed by request: full hero skin unlock disabled.
+    return
 end
 
 -- ==================== EXIT (AUTO RESTORE) ====================
 function d()
-    pcall(function()
-        gg.removeListItems(gg.getListItems())
-        if #injected_files > 0 then
-            pcall(restore_all_injected)
-        end
-    end)
-    hardened_exit()
+    gg.removeListItems(gg.getListItems())
+    if #injected_files > 0 then
+        show_download_progress("RESTORING ORIGINAL FILES")
+        restore_all_injected() gg.sleep(500)
+    end
+    gg.toast("Goodbye. All files restored.")
+    gg.sleep(300)
+    -- Signal controlled exit to main loop
+    error("__FORCED_EXIT__")
 end
 
 -- ==================== LOCAL STARTUP (NO NETWORK) ====================
 function local_startup()
-    pcall(function()
-        show_welcome()
-        gg.sleep(400)
-    end)
+    -- Local startup disabled to enforce license check.
+    hardened_exit()
 end
 
 -- ==================== MAIN MENU ====================
 function Main()
 local menu = gg.choice({
 
-"1. ANTI-BAN",
-"2. ANTI-DETECT",
-"3. MAPHACK + ESP",
-"4. DRONEVIEW SELECTION",
-"5. ENEMY LAG 310ms",
-"6. ANTI-LAG 5ms",
-"7. ENEMY NOOB",
-"8. TEAM PRO",
-"9. FPS/GPU BOOST 120FPS",
-"10. RANK BOOST",
-"11. DAMAGE +50%",
-"12. DEFENSE +50",
-"13. COOLDOWN -50%",
-"14. SPEED WALK +50%",
-"15. ATTACK SPEED +50%",
-"16. LIFESTEAL 50%",
-"17. FAST GOLD 2x",
-"18. INVISIBLE NAME",
-"19. SKIN UNLOCK (FULL)",
-"20. UNLOCK BATTLE SPELLS",
-"21. CLEAR BATTLE RECORD",
-"22. ROOM INFO",
-"23. NO GRASS (ON/OFF)",
-"24. UPDATE LICENSE",
-"25. EXIT"
+"MAPHACK",
+"DRONEVIEW SELECTION (In-game)",
+"ENEMY LAG 310ms (In-game)",
+"ANTI-LAG 5ms (In-game)",
+"RANKED (schedule for Lobby)",
+"UNLOCK 120 FPS (Lobby)",
+"CLEAR BATTLE RECORD (Lobby)",
+"ROOM INFO (Draft)",
+"UPDATE LICENSE (Network)",
+"EXIT (Restore & Exit)"
 
 }, nil, "DOUTE MENU")
 
-if not menu then return true end
-    if menu == 1  then AntiBan() end
-    if menu == 2  then AntiDetect() end
-    if menu == 3  then MaphackAndESP() end
-    if menu == 4  then
+if not menu then return end
+    if menu == 1 then MaphackAndESP() end
+    if menu == 2 then
         local sub = gg.choice({
             " DRONE V1 ON",
             " DRONE V1 OFF",
@@ -2662,44 +1693,23 @@ if not menu then return true end
         if sub == 21 then Drone14x_ON() end
         if sub == 22 then Drone14x_OFF() end
     end
-    if menu == 5  then
+    if menu == 3 then
         local sub = gg.choice({" ENEMY LAG ON (310ms)"," ENEMY LAG OFF"," BACK"}, nil, " ENEMY LAG")
         if sub == 1 then EnemyLag310() end
         if sub == 2 then EnemyLagOFF() end
     end
-    if menu == 6  then AntiLag() end
-    if menu == 7  then EnemyNoob() end
-    if menu == 8  then TeamPro() end
-    if menu == 9  then SmoothBoost() end
-    if menu == 10 then RankBoost() end
-    if menu == 11 then DamageBoost() end
-    if menu == 12 then DefenseBoost() end
-    if menu == 13 then CooldownReduce() end
-    if menu == 14 then SpeedWalkBoost() end
-    if menu == 15 then AttackSpeedBoost() end
-    if menu == 16 then LifestealBoost() end
-    if menu == 17 then FastGold() end
-    if menu == 18 then
-        local sub = gg.choice({
-            "   INVISIBLE NAME",
-            "  INVISIBLE NAME ON",
-            "   INVISIBLE NAME OFF",
-            "   BACK"
-        }, nil, " INVISIBLE NAME")
-        if sub == 2 then InvisibleName() end
-        if sub == 3 then InvisibleNameOFF() end
+    if menu == 4 then AntiLag() end
+    if menu == 5 then
+        -- Schedule RANKED to apply in Lobby/Draft
+        RANKED_SCHEDULED = true
+        gg.toast("RANKED scheduled for Lobby — will apply automatically")
+        return
     end
-    if menu == 19 then SkinMenuByRole() end
-    if menu == 20 then UnlockAllBattleSpells() end
-    if menu == 21 then record() end
-    if menu == 22 then RoomInfo() end
-    if menu == 23 then
-        local sub = gg.choice({"NO GRASS ON"," NO GRASS OFF"," BACK"}, nil, " NO GRASS")
-        if sub == 1 then NoGrass_ON() end
-        if sub == 2 then NoGrass_OFF() end
-    end
-    if menu == 24 then UpdateLicenseKey() end
-    if menu == 25 then return false end
+    if menu == 6 then SmoothBoost() end
+    if menu == 7 then record() end
+    if menu == 8 then RoomInfo() end
+    if menu == 9 then UpdateLicenseKey() end
+    if menu == 10 then d() end
 end
 
 -- API export for module usage
@@ -2715,30 +1725,23 @@ if ... then
 end
 
 -- ==================== STARTUP ====================
--- Defer strict license enforcement until user requests protected features.
--- This prevents immediate exit when script is launched in non-GG environments.
--- Restore license system: require key on startup
-if not require_license() then
-    return
-end
-local_startup()
+-- Use local whitelist startup instead of remote license
+start_local_whitelist()
+-- require license after HWID is set; if missing or invalid, stop
+if not require_license() then hardened_exit() end
 make_dir(BACKUP_DIR)
 
 -- ==================== MAIN LOOP (FIXED - stable 100ms) ====================
 local game_was_running = true
-while true do
+while RUNNING do
     if gg.isVisible(true) then
         gg.setVisible(false)
-        local ok, ret = pcall(Main)
+        local ok, err = pcall(Main)
         if not ok then
-            gg.toast(" Auto-recovery...")
-            gg.sleep(500)
-        else
-            if ret == false then
-                -- user requested exit; perform cleanup and stop loop
-                d()
+            if tostring(err) == "__FORCED_EXIT__" then
                 break
             end
+            gg.toast(" Auto-recovery...") gg.sleep(500)
         end
     end
     pcall(function()
@@ -2748,5 +1751,24 @@ while true do
             restore_all_injected() game_was_running = false
         end
     end)
+    -- Apply scheduled Ranked settings when in Lobby (no active room players)
+    pcall(function()
+        if RANKED_SCHEDULED then
+            local players = scan_room_players()
+            if type(players) == 'table' and #players == 0 then
+                -- likely in lobby (no room/draft active)
+                EnemyNoob()
+                gg.sleep(150)
+                TeamPro()
+                gg.sleep(150)
+                RankBoost()
+                RANKED_SCHEDULED = false
+                gg.toast("RANKED applied in Lobby")
+            end
+        end
+    end)
     gg.sleep(100)
 end
+
+-- Clean exit
+hardened_exit()
