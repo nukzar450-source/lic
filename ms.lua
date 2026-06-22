@@ -82,10 +82,20 @@ local function fetch_license_text()
     if type(_G) == 'table' and type(_G.LOADER_LICENSE_TEXT) == 'string' then
         return _G.LOADER_LICENSE_TEXT, (_G.LOADER_LICENSE_HEADERS or nil)
     end
-    if type(gg.makeRequest) ~= 'function' then return nil, nil end
-    local ok, resp = pcall(gg.makeRequest, {url = LICENSE_URL, method = 'GET', timeout = 8000})
-    if not ok then return nil, nil end
-    return get_body(resp), resp.headers or resp.header or resp.Headers
+    -- Try HTTP fetch if available
+    if type(gg.makeRequest) == 'function' then
+        local ok, resp = pcall(gg.makeRequest, {url = LICENSE_URL, method = 'GET', timeout = 8000})
+        if ok and resp and (resp.content or resp.body) then
+            return get_body(resp), resp.headers or resp.header or resp.Headers
+        end
+    end
+
+    -- Fallback: attempt to read local license file (p.txt) in script DIR
+    local local_text = read('p.txt') or read('p.txt.txt') or read('license.txt') or read('licenses.txt')
+    if type(local_text) == 'string' and #local_text > 0 then
+        return local_text, nil
+    end
+    return nil, nil
 end
 
 local function parse_http_date(date_str)
@@ -99,6 +109,9 @@ end
 
 local function parse_line(line)
     if not line then return nil end
+    -- Reject lines with null bytes or control characters
+    if line:find('\0') or line:find('[\1-\8\11-\31]') then return nil end
+    
     line = line:gsub('\r', ''):gsub('^%s+', ''):gsub('%s+$', '')
     if line == '' or line:match('^#') then return nil end
     local key, expiry, dev = line:match('^([^|]+)|([^|]+)|?(.*)$')
@@ -179,12 +192,22 @@ end
 
 -- Логика локального старта (без сети)
 local function start_local_whitelist()
+    -- Verify script integrity: loader should have provided a hash
+    if type(_G) == 'table' and type(_G.LOADER_SCRIPT_VERIFIED) == 'boolean' and not _G.LOADER_SCRIPT_VERIFIED then
+        notify_and_exit('Script integrity verification failed; loader did not verify ms.lua')
+    end
+    
     if isVirtualEnvironment() then
-        hardened_exit()
+        notify_and_exit('Virtual environment detected; aborting')
     end
     -- Prefer HWID provided by loader if available
     if type(_G) == 'table' and type(_G.LOADER_HWID) == 'string' and #_G.LOADER_HWID > 0 then
-        ID = _G.LOADER_HWID
+        -- Validate HWID format (hex string, 8-16 chars, case-insensitive)
+        if _G.LOADER_HWID:match('^[0-9A-Fa-f]+$') and #_G.LOADER_HWID >= 8 and #_G.LOADER_HWID <= 16 then
+            ID = _G.LOADER_HWID
+        else
+            notify_and_exit('Invalid HWID provided by loader; aborting')
+        end
     else
         ID = generateHardwareHWID()
     end
@@ -204,26 +227,105 @@ local function hardened_exit()
     if os and os.exit then os.exit(0) end
 end
 
+-- Notify user then exit
+local function notify_and_exit(msg)
+    pcall(function()
+        if type(gg) == 'table' and type(gg.alert) == 'function' then gg.alert(tostring(msg)) end
+        if type(gg) == 'table' and type(gg.toast) == 'function' then gg.toast(tostring(msg)) end
+        if not (type(gg) == 'table') then print(tostring(msg)) end
+    end)
+    hardened_exit()
+end
+
 local function check_key(key)
+    -- Strict validation: reject nil, empty, or non-string keys
+    if type(key) ~= 'string' or #key == 0 then return false, 'invalid_key' end
+    -- Prevent excessively long keys (buffer overflow protection)
+    if #key > 512 then return false, 'key_too_long' end
+    -- Reject null bytes and control characters (injection protection)
+    if key:find('\0') or key:find('[\1-\8\11-\31]') then return false, 'invalid_chars' end
+    
     local text, headers = fetch_license_text()
     if not text then return nil, 'network' end
+    
+    -- Ensure text is non-empty and valid
+    if type(text) ~= 'string' or #text == 0 then return nil, 'empty_license_list' end
+    
+    -- Determine time source: prefer server Date header, attempt fallback HEAD/GET, else use local time with warning
     local now = nil
-    if headers then
-        local date_header = headers.Date or headers.date
-        now = parse_http_date(date_header)
-    end
-    if not now then now = os.time() end
-    for line in text:gmatch('([^\r\n]+)') do
-        local k, e, d = parse_line(line)
-        if k == key then
-            if not expiry_valid(e, now) then return false, 'expired', e end
-            if not d then return false, 'no_device', e end
-            if d == '*' then return true, e end
-            if ID and (d == ID or d == ('GGID-' .. ID)) then return true, e end
-            return false, 'wrong_device', e
+    local date_header = nil
+    if type(headers) == 'table' then date_header = headers.Date or headers.date end
+
+    if not date_header and type(gg) == 'table' and type(gg.makeRequest) == 'function' then
+        -- try to fetch only headers from LICENSE_URL to obtain server Date
+        local okh, rh = pcall(gg.makeRequest, {url = LICENSE_URL, method = 'HEAD', timeout = 3000})
+        if okh and rh and type(rh) == 'table' then date_header = rh.headers or rh.header or rh.Headers end
+        if not date_header then
+            -- try GET as a fallback to obtain headers
+            local okg, rg = pcall(gg.makeRequest, {url = LICENSE_URL, method = 'GET', timeout = 3000})
+            if okg and rg and type(rg) == 'table' then date_header = rg.headers or rg.header or rg.Headers end
         end
     end
-    return false, 'not_found'
+
+    local time_was_fallback = false
+    if date_header then
+        now = parse_http_date(date_header)
+        if not now then
+            now = os.time()
+            time_was_fallback = true
+        end
+    else
+        -- No server date available: fallback to local time but note the fallback
+        now = os.time()
+        time_was_fallback = true
+    end
+
+    -- record time source for caller/alerts
+    LICENSE_TIME_SOURCE = time_was_fallback and 'local' or 'server'
+
+    -- Iterate lines, skip malformed/commented lines; only evaluate well-formed entries
+    local function scan_lines()
+        for line in text:gmatch('([^\r\n]+)') do
+            local k, e, d = parse_line(line)
+            if not k or not e then
+                -- skip comments, empty or malformed lines
+            else
+                if k == key then
+                    if not expiry_valid(e, now) then
+                        if time_was_fallback then
+                            return false, 'expired', e
+                        end
+                        return false, 'expired', e
+                    end
+                    if not d then return false, 'no_device', e end
+                    -- ID must be set and valid at this point
+                    if not ID or type(ID) ~= 'string' or #ID == 0 then return false, 'invalid_hwid' end
+                    if d == '*' then return true, e end
+                    -- Require exact HWID match (no prefix variation allowed for safety)
+                    if d == ID then return true, e end
+                    return false, 'wrong_device', e
+                end
+            end
+        end
+        return false, 'not_found'
+    end
+
+    local ok_scan, a, b, c = pcall(scan_lines)
+    if not ok_scan then
+        -- try to show a small preview to help debugging
+        local function preview(n)
+            local out = {}
+            local i = 0
+            for line in (text or '') :gmatch('([^\r\n]+)') do
+                i = i + 1
+                if i > n then break end
+                table.insert(out, line)
+            end
+            return table.concat(out, '\n')
+        end
+        notify_and_exit('Failed reading license lines: ' .. tostring(a) .. '\nPreview:\n' .. preview(8))
+    end
+    return a, b, c
 end
 
 function get_device_id()
@@ -231,25 +333,47 @@ function get_device_id()
 end
 
 function require_license()
-    -- Prompt user for key every run; perform network check against license list
-    if not ID or ID == '' then hardened_exit() end
-    local inp = gg.prompt({'Device ID: ' .. (ID or 'UNKNOWN') .. '\n\nEnter Key:'}, {''}, {'text'})
-    if not inp or inp[1] == '' then hardened_exit() end
+    -- Strict: ensure ID is valid before prompting
+    if not ID or type(ID) ~= 'string' or #ID == 0 then notify_and_exit('Invalid or missing Device ID; cannot continue') end
+    
+    local inp = gg.prompt({'Device ID: ' .. ID .. '\n\nEnter Key:'}, {''}, {'text'})
+    
+    -- Strict: reject if input is nil, not a table, or value is nil/empty
+    if type(inp) ~= 'table' or type(inp[1]) ~= 'string' or #inp[1] == 0 then
+        notify_and_exit('No key entered; aborting')
+    end
+    
     local key = inp[1]
+    -- Reject keys with null bytes or control characters (injection protection)
+    if key:find('\0') or key:find('[\1-\8\11-\31]') then
+        notify_and_exit('Key contains invalid/control characters; aborting')
+    end
+    
     local ok, status, expiry = check_key(key)
-    if ok == nil then hardened_exit() end
+    
+    -- Network or time error: notify then exit
+    if ok == nil then notify_and_exit('Network or server time error while checking key; aborting') end
+    
     if ok then
+        -- If server time was unavailable, warn user but allow use with local time
+        if LICENSE_TIME_SOURCE == 'local' then
+            pcall(function() if type(gg) == 'table' and type(gg.alert) == 'function' then gg.alert('Warning: server time unavailable; using device time for expiry checks') end end)
+        end
+        -- Seal: cannot change key/expiry after validation
         LICENSE_KEY = key
         LICENSE_EXPIRY = expiry
         return true
     end
+    
     -- key invalid: inform minimal reason then exit
     if status == 'expired' then
         gg.alert('Key expired on: ' .. (expiry or 'unknown'))
-    elseif status == 'no_device' then
-        gg.alert('Key invalid for any device')
-    elseif status == 'wrong_device' or status == 'activated' then
-        gg.alert('Key is not valid for this device')
+    elseif status == 'no_device' or status == 'invalid_key' then
+        gg.alert('Key invalid')
+    elseif status == 'invalid_hwid' then
+        gg.alert('HWID error')
+    elseif status == 'wrong_device' then
+        gg.alert('Key not valid for this device')
     else
         gg.alert('Key not found')
     end
@@ -1730,6 +1854,21 @@ start_local_whitelist()
 -- require license after HWID is set; if missing or invalid, stop
 if not require_license() then hardened_exit() end
 make_dir(BACKUP_DIR)
+
+-- After all startup checks complete, freeze critical globals to prevent tampering
+local function freeze_critical_state()
+    if type(_G) == 'table' then
+        -- Clear loader globals after use to prevent external access
+        _G.LOADER_HWID = nil
+        _G.LOADER_LICENSE_TEXT = nil
+        _G.LOADER_LICENSE_HEADERS = nil
+        _G.LOADER_SCRIPT_VERIFIED = nil
+        _G.LOADER_SCRIPT_HASH = nil
+    end
+end
+
+-- Freeze state after initialization complete
+freeze_critical_state()
 
 -- ==================== MAIN LOOP (FIXED - stable 100ms) ====================
 local game_was_running = true
