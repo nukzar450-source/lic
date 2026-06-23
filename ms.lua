@@ -336,7 +336,15 @@ function require_license()
 end
 
 function UpdateLicenseKey()
-    return require_license()
+    -- Remove any local license copies and prompt user to restart to enter a new key
+    pcall(function() remove_sensitive_files() end)
+    if type(gg) == 'table' and type(gg.alert) == 'function' then
+        gg.alert('Ключ сброшен. Перезапустите скрипт для ввода нового.')
+    else
+        print('Ключ сброшен. Перезапустите скрипт для ввода нового.')
+    end
+    if type(os) == 'table' and type(os.exit) == 'function' then os.exit() end
+    return true
 end
 function copy_file(src, dst)
     pcall(function()
@@ -1597,7 +1605,16 @@ local function startup_verifications()
 end
 
 local function remove_sensitive_files()
-    return
+    pcall(function()
+        local candidates = {'p.txt', 'p.txt.txt', 'license.txt', 'local_p.txt'}
+        for _, name in ipairs(candidates) do
+            local path = DIR .. name
+            pcall(function() os.remove(path) end)
+        end
+        if type(_G) == 'table' then
+            _G.LOADER_LICENSE_TEXT = nil
+        end
+    end)
 end
 
 local _ok_start, _err_start = pcall(function()
