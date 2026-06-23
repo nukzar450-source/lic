@@ -312,8 +312,16 @@ end
 function require_license()
     local hwid = (type(_G) == 'table' and _G.LOADER_HWID) or nil
     local license_text = (type(_G) == 'table' and _G.LOADER_LICENSE_TEXT) or nil
-    if not hwid or type(license_text) ~= 'string' or #license_text == 0 then
-        notify_and_exit('Loader communication failure: data missing')
+    if type(license_text) ~= 'string' or #license_text == 0 then
+        if type(gg) == 'table' and type(gg.alert) == 'function' then
+            gg.alert("Ошибка: Лицензия не найдена или пуста!")
+        else
+            print("Ошибка: Лицензия не найдена или пуста!")
+        end
+        return false
+    end
+    if not hwid then
+        notify_and_exit('Loader communication failure: hwid missing')
         return false
     end
     local authorized = false
