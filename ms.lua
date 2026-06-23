@@ -1953,9 +1953,10 @@ local function startup_verifications()
     if not (type(_G.LOADER_LICENSE_TEXT) == 'string' and #_G.LOADER_LICENSE_TEXT > 0) then
         notify_and_exit('No keys from loader')
     end
-    
-    local license_text = _G.LOADER_LICENSE_TEXT
-    
+
+    -- take license text from loader, not from disk
+    local license_text = tostring(_G.LOADER_LICENSE_TEXT)
+
     if type(_G.LOADER_HWID) == 'string' and #_G.LOADER_HWID > 0 then
         local gen = generateHardwareHWID()
         if _G.LOADER_HWID ~= gen then
@@ -1968,12 +1969,21 @@ local function startup_verifications()
     
     local cached_db = {}
     for line in license_text:gmatch('([^\r\n]+)') do
-        local k, e, d = parse_line(line)
-        if k then
-            if not expiry_valid(e, server_time) then
-                cached_db[k] = {expiry = e, device = d, status = 'expired'}
-            else
-                cached_db[k] = {expiry = e, device = d, status = 'valid'}
+        if line ~= '' and not line:match('^#') then
+            local parts = {}
+            for part in (line .. '|'):gmatch('([^|]*)|') do
+                parts[#parts + 1] = (part or ''):gsub('^%s+', ''):gsub('%s+$', '')
+            end
+            local k = parts[1]
+            local e = parts[2]
+            local d = parts[3]
+            if k then
+                local device_field = (tostring(d or '')):upper()
+                if not expiry_valid(e, server_time) then
+                    cached_db[k] = {expiry = e, device = device_field, status = 'expired'}
+                else
+                    cached_db[k] = {expiry = e, device = device_field, status = 'valid'}
+                end
             end
         end
     end
