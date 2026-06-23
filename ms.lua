@@ -1932,12 +1932,19 @@ local function startup_verifications()
         notify_and_exit('Not authorized')
     end
     
-    if not (type(_G.LOADER_SERVER_EPOCH) == 'number' and _G.LOADER_SERVER_EPOCH > 0) then
+    -- Prefer loader-provided server epoch (new name), fall back to legacy loader var
+    local server_time = nil
+    if type(_G) == 'table' then
+        if type(_G.SERVER_EPOCH_TIME) == 'number' and _G.SERVER_EPOCH_TIME > 0 then
+            server_time = _G.SERVER_EPOCH_TIME
+        elseif type(_G.LOADER_SERVER_EPOCH) == 'number' and _G.LOADER_SERVER_EPOCH > 0 then
+            server_time = _G.LOADER_SERVER_EPOCH
+        end
+    end
+    if not server_time then
         notify_and_exit('No server epoch')
     end
-    
     local local_time = os.time()
-    local server_time = _G.LOADER_SERVER_EPOCH
     local time_diff = math.abs(local_time - server_time)
     if time_diff > 1800 then
         notify_and_exit('Time too far from server')
