@@ -68,56 +68,96 @@ end
 local ID = nil
 -- Умная функция детекта виртуальной среды по поведению железа
 local function isVirtualEnvironment()
-    local cpuFile = io.open("/proc/cpuinfo", "r")
-    if cpuFile then
-        local cpuContent = cpuFile:read("*a")
-        cpuFile:close()
-        local _, coreCount = string.gsub(cpuContent, "processor", "")
-        if coreCount > 0 and coreCount <= 2 then
-            return true
+    local checks = {
+        function()
+            local f = io.open('/proc/cpuinfo', 'r')
+            if f then
+                local c = f:read('*a') f:close()
+                if c:lower():find('qemu') or c:lower():find('goldfish') or c:lower():find('ranchu') then return true end
+            end
+            return false
+        end,
+        function()
+            local f = io.open('/proc/version', 'r')
+            if f then
+                local v = f:read('*a') f:close()
+                if v:lower():find('generic') or v:lower():find('emulator') then return true end
+            end
+            return false
+        end,
+        function()
+            local f = io.open('/system/build.prop', 'r')
+            if f then
+                for line in f:lines() do
+                    if line:lower():find('ro.kernel.qemu') or line:lower():find('ro.secure=0') or line:lower():find('vbox') then f:close(); return true end
+                end
+                f:close()
+            end
+            return false
+        end,
+        function()
+            local ok, info = pcall(gg.getTargetInfo)
+            if ok and info and info.uid then
+                local uid = tonumber(info.uid)
+                if uid and (uid > 99999 or uid < 10000) then return true end
+            end
+            return false
+        end,
+        function()
+            local f = io.open('/proc/mounts','r')
+            if f then
+                local m = f:read('*a') f:close()
+                if string.find(m, '/data/media/0') == nil and (string.find(m, 'vmos') or string.find(m, 'vphone')) then return true end
+            end
+            return false
         end
-    end
+    }
 
-    local ok, info = pcall(gg.getTargetInfo)
-    if ok and info and info.uid then
-        local uid = tonumber(info.uid)
-        if uid and (uid > 99999 or uid < 10000) then
-            return true
-        end
+    for _, check in ipairs(checks) do
+        local ok, res = pcall(check)
+        if ok and res then return true end
     end
-
-    local mountsFile = io.open("/proc/mounts", "r")
-    if mountsFile then
-        local mountsContent = mountsFile:read("*a")
-        mountsFile:close()
-        if string.find(mountsContent, "/data/media/0") == nil and (string.find(mountsContent, "vmos") or string.find(mountsContent, "vphone")) then
-            return true
-        end
-    end
-
     return false
 end
 
 -- Функция генерации честного HWID (выполняется, только если устройство настоящее)
 local function generateHardwareHWID()
     local parts = {}
-    local ok, info = pcall(gg.getTargetInfo)
-    if ok and info then
-        table.insert(parts, tostring(info.uid or "10100"))
-        table.insert(parts, tostring(info.x64 and "64" or "32"))
-    else
-        table.insert(parts, "10100")
-        table.insert(parts, "32")
-    end
+    local info = nil
+    local ok, res = pcall(function() return gg.getTargetInfo() end)
+    if ok and type(res) == 'table' then info = res end
+
+    table.insert(parts, tostring(info and info.uid or "10100"))
+    table.insert(parts, tostring(info and info.x64 and "64" or "32"))
     local w = (info and info.nativeWidth) or 1080
     local h = (info and info.nativeHeight) or 2400
     table.insert(parts, w .. "X" .. h)
-    local rawId = table.concat(parts, "-")
+
+    local function read_serial()
+        local f = io.open('/system/build.prop','r')
+        if not f then return nil end
+        for line in f:lines() do
+            local v = line:match('^ro%.serialno=(.+)$')
+            if v and #v > 0 then f:close(); return v end
+        end
+        f:close()
+        return nil
+    end
+
+    local serial = read_serial()
+    if serial then table.insert(parts, serial) end
+
+    local rawId = table.concat(parts, '|')
+    if type(gg) == 'table' and type(gg.hash) == 'function' then
+        local ok2, h = pcall(function() return gg.hash(rawId, 'sha256') end)
+        if ok2 and type(h) == 'string' then return string.upper(h:sub(1,16)) end
+    end
+
     local hash = 5381
     for i = 1, #rawId do
         hash = ((hash * 33) + string.byte(rawId, i)) % 4294967296
     end
-    return string.upper(string.format("%x", hash))
+    return string.upper(string.format("%x", hash)):sub(1,16)
 end
 
 -- Standalone runner support: if ms.lua is executed directly (no loader),
