@@ -1923,111 +1923,21 @@ end
 local _SCRIPT_ALREADY_STARTED = false
 
 local function startup_verifications()
-    if _SCRIPT_ALREADY_STARTED == true then
-        notify_and_exit('Already started')
-    end
-    _SCRIPT_ALREADY_STARTED = true
-    
-    if not (type(_G) == 'table' and _G.LOADER_AUTHORIZED == true) then
-        notify_and_exit('Not authorized')
-    end
-    
-    -- Prefer loader-provided server epoch (new name), fall back to legacy loader var
-    local server_time = nil
-    if type(_G) == 'table' then
-        if type(_G.SERVER_EPOCH_TIME) == 'number' and _G.SERVER_EPOCH_TIME > 0 then
-            server_time = _G.SERVER_EPOCH_TIME
-        elseif type(_G.LOADER_SERVER_EPOCH) == 'number' and _G.LOADER_SERVER_EPOCH > 0 then
-            server_time = _G.LOADER_SERVER_EPOCH
-        end
-    end
-    if not server_time then
-        notify_and_exit('No server epoch')
-    end
-    local local_time = os.time()
-    local time_diff = math.abs(local_time - server_time)
-    if time_diff > 1800 then
-        notify_and_exit('Time too far from server')
-    end
-    
-    if not (type(_G.LOADER_LICENSE_TEXT) == 'string' and #_G.LOADER_LICENSE_TEXT > 0) then
-        notify_and_exit('No keys from loader')
+    -- 1. Если лоадер не передал данные — сразу убиваем
+    if not (type(_G) == 'table' and _G.LOADER_AUTHORIZED) then
+        if type(os) == 'table' and type(os.exit) == 'function' then os.exit() end
+        return false
     end
 
-    -- take license text from loader, not from disk
-    local license_text = tostring(_G.LOADER_LICENSE_TEXT)
+    -- 2. Если HWID не совпал — убиваем (опционально)
+    -- Примечание: замените "ТВОЙ_HWID_КАПСОМ" на желаемое значение при необходимости
+    if type(_G) == 'table' and _G.LOADER_HWID and _G.LOADER_HWID ~= "ТВОЙ_HWID_КАПСОМ" then
+        -- при желании можно завершать здесь
+        -- if type(os) == 'table' and type(os.exit) == 'function' then os.exit() end
+    end
 
-    if type(_G.LOADER_HWID) == 'string' and #_G.LOADER_HWID > 0 then
-        local gen = generateHardwareHWID()
-        if _G.LOADER_HWID ~= gen then
-            notify_and_exit('HWID mismatch')
-        end
-        ID = _G.LOADER_HWID
-    else
-        notify_and_exit('No HWID')
-    end
-    
-    local cached_db = {}
-    for line in license_text:gmatch('([^\r\n]+)') do
-        if line ~= '' and not line:match('^#') then
-            local parts = {}
-            for part in (line .. '|'):gmatch('([^|]*)|') do
-                parts[#parts + 1] = (part or ''):gsub('^%s+', ''):gsub('%s+$', '')
-            end
-            local k = parts[1]
-            local e = parts[2]
-            local d = parts[3]
-            if k then
-                local device_field = (tostring(d or '')):upper()
-                if not expiry_valid(e, server_time) then
-                    cached_db[k] = {expiry = e, device = device_field, status = 'expired'}
-                else
-                    cached_db[k] = {expiry = e, device = device_field, status = 'valid'}
-                end
-            end
-        end
-    end
-    
-    if #cached_db == 0 then
-        notify_and_exit('No valid keys')
-    end
-    
-    local inp = gg.prompt({'Device ID: ' .. ID .. '\n\nEnter Key:'}, {''}, {'text'})
-    if not inp or inp[1] == '' then
-        notify_and_exit('No key')
-    end
-    local key = inp[1]
-    
-    if type(key) ~= 'string' or #key == 0 or key:find('\0') or #key > 512 then
-        notify_and_exit('Invalid key')
-    end
-    
-    local entry = cached_db[key]
-    if not entry then
-        notify_and_exit('Key not found')
-    end
-    
-    if entry.status == 'expired' then
-        notify_and_exit('Key expired')
-    end
-    
-    if entry.device and entry.device ~= '' then
-        local dev_field = tostring(entry.device)
-        if dev_field ~= '*' then
-            local found = false
-            for part in dev_field:gmatch('([^,]+)') do
-                local cand = part:gsub('%s+', '')
-                if cand == ID then found = true break end
-            end
-            if not found then
-                notify_and_exit('Wrong device')
-            end
-        end
-    end
-    
-    LICENSE_KEY = key
-    LICENSE_EXPIRY = entry.expiry
-    LICENSE_TIME_SOURCE = 'server'
+    -- Доверяем лоадеру: разрешаем запуск
+    return true
 end
 
 -- Wrap startup in pcall to capture runtime errors (temporary debug)
@@ -2051,9 +1961,9 @@ local _ok_start, _err_start = pcall(function()
         notify_and_exit('Device not authorized by loader')
     end
     
-    -- STEP 2: startup_verifications() now handles: internet dialog → license download → date parsing → key prompt → key validation
-    -- If successful, LICENSE_KEY and LICENSE_EXPIRY are set. If it fails, startup_verifications() calls notify_and_exit()
-    startup_verifications()
+    -- STEP 2: startup_verifications() replaced by loader-based trust (disabled here)
+    -- If you need to enable local startup checks again, uncomment the next line.
+    -- startup_verifications()
     
     -- STEP 3: After startup complete, remove sensitive files
     remove_sensitive_files()
