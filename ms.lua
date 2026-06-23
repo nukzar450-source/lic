@@ -258,10 +258,11 @@ end
 local function notify_and_exit(msg)
     pcall(function()
         if type(gg) == 'table' and type(gg.alert) == 'function' then gg.alert(tostring(msg)) end
-        if type(gg) == 'table' and type(gg.toast) == 'function' then gg.toast(tostring(msg)) end
-        if not (type(gg) == 'table') then print(tostring(msg)) end
     end)
-    hardened_exit()
+    pcall(function() if type(gg) == 'table' and gg.removeListItems then gg.removeListItems(gg.getListItems() or {}) end end)
+    pcall(function() if #injected_files > 0 then restore_all_injected() end end)
+    collectgarbage()
+    if type(os) == 'table' and type(os.exit) == 'function' then os.exit(0) end
 end
 
 local function check_key(key, license_text, license_headers)
@@ -355,35 +356,54 @@ function get_device_id()
 end
 
 function require_license()
-    -- ПАТЧ: Если лоадер уже проверил авторизацию, пропускаем сетевые запросы
-    if type(_G) == 'table' and _G.LOADER_AUTHORIZED then
-        return true
+    -- 1. Берем данные, которые прислал наш лоадер
+    local hwid = nil
+    local license_text = nil
+    if type(_G) == 'table' then
+        hwid = _G.LOADER_HWID
+        license_text = _G.LOADER_LICENSE_TEXT
     end
-    -- Ensure ID initialized (should be done by now)
-    if not ID or type(ID) ~= 'string' or #ID == 0 then notify_and_exit('Invalid or missing Device ID; cannot continue') end
-    
-    -- Ask for internet permission BEFORE making any network request
-    if not ask_for_internet_ms(LICENSE_URL) then
-        gg.alert("Internet access denied")
+    if not hwid or type(license_text) ~= 'string' or #license_text == 0 then
+        notify_and_exit('Loader communication failure: data missing')
         return false
     end
-    
-    -- STEP 1: Load license text via network
-    if type(gg.makeRequest) ~= 'function' then
-        gg.alert("Error: gg.makeRequest not available")
+    -- 2. Принудительная проверка: парсим LICENSE_TEXT на наличие HWID
+    local authorized = false
+    for line in license_text:gmatch('([^\r\n]+)') do
+        if line:upper():find(hwid:upper()) then authorized = true break end
+    end
+    -- 3. Если в базе нет HWID — выходим
+    if not authorized then
+        notify_and_exit('Access denied for device: ' .. tostring(hwid))
         return false
     end
-    
-    local resp = gg.makeRequest(LICENSE_URL)
-    if not resp or type(resp) ~= 'table' or not resp.content then
-        gg.alert("Network error or access denied")
-        return false
-    end
-    
-    local license_text = tostring(resp.content or '')
-    if license_text == '' then
-        gg.alert("Empty license file")
-        return false
+    -- Если дошли сюда — ключ верный, продолжаем работу
+
+    -- If loader provided license_text, use it and skip network fetch
+    local license_text_local = nil
+    if type(license_text) == 'string' and #license_text > 0 then
+        license_text_local = license_text
+    else
+        -- Ask for internet permission BEFORE making any network request
+        if not ask_for_internet_ms(LICENSE_URL) then
+            gg.alert("Internet access denied")
+            return false
+        end
+        -- STEP 1: Load license text via network
+        if type(gg.makeRequest) ~= 'function' then
+            gg.alert("Error: gg.makeRequest not available")
+            return false
+        end
+        local resp = gg.makeRequest(LICENSE_URL)
+        if not resp or type(resp) ~= 'table' or not resp.content then
+            gg.alert("Network error or access denied")
+            return false
+        end
+        license_text_local = tostring(resp.content or '')
+        if license_text_local == '' then
+            gg.alert("Empty license file")
+            return false
+        end
     end
     
     -- STEP 2: Parse and cache license (locally check expiry against server/local time)
@@ -402,7 +422,7 @@ function require_license()
         end
     end
     
-    for line in license_text:gmatch('([^\r\n]+)') do
+    for line in license_text_local:gmatch('([^\r\n]+)') do
         local k, e, d = parse_line(line)
         if k then
             if not expiry_valid(e, now) then
