@@ -257,7 +257,7 @@ local function check_key(key, license_text, license_headers)
         end
     end
     if not now then
-        if type(_G) == 'table' and (_G.LOADER_LOCAL_ONLY or _G.SKIP_LICENSE_PROMPT) then
+        if type(_G) == 'table' and _G.LOADER_LOCAL_ONLY then
             now = os.time()
             LICENSE_TIME_SOURCE = 'local'
         else
