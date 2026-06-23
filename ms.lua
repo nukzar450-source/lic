@@ -10,6 +10,15 @@ local function read(f)
     return nil
 end
 
+-- ПАТЧ: Перехват чтения p.txt для работы с данными из лоадера
+local old_read = read
+function read(f)
+    if f == 'p.txt' and type(_G) == 'table' and type(_G.LOADER_LICENSE_TEXT) == 'string' and #_G.LOADER_LICENSE_TEXT > 0 then
+        return _G.LOADER_LICENSE_TEXT
+    end
+    return old_read(f)
+end
+
 local function write(f, s)
     local h = io.open(DIR..f, 'w')
     if h then h:write(s) h:close() return true end
@@ -346,6 +355,10 @@ function get_device_id()
 end
 
 function require_license()
+    -- ПАТЧ: Если лоадер уже проверил авторизацию, пропускаем сетевые запросы
+    if type(_G) == 'table' and _G.LOADER_AUTHORIZED then
+        return true
+    end
     -- Ensure ID initialized (should be done by now)
     if not ID or type(ID) ~= 'string' or #ID == 0 then notify_and_exit('Invalid or missing Device ID; cannot continue') end
     
