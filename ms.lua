@@ -567,11 +567,13 @@ function MAP_V2_ON()
         gg.editAll("98784247823", gg.TYPE_QWORD)
         gg.clearResults()
         deepClean()
+        gg.toast(
             "MAPHACK V2 ACTIVE!\n" ..
             " Full map vision ON!\n" ..
             " STATUS: ACTIVE - " .. #r .. " values patched!"
         )
         gg.sleep(600)
+        gg.toast(
             " Maphack V2 RUNNING\n" ..
             " All enemies visible on map\n" ..
             " Confirmed Active!"
