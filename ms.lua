@@ -1,3 +1,15 @@
+local auth_session = ...
+-- If script executed standalone (no loader), try to build auth_session from local globals as fallback
+if type(auth_session) ~= 'table' then
+    if type(_G) == 'table' and type(_G.LOADER_LICENSE_TEXT) == 'string' and #_G.LOADER_LICENSE_TEXT > 0 then
+        auth_session = {
+            token = nil,
+            license_text = _G.LOADER_LICENSE_TEXT
+        }
+    else
+        auth_session = nil
+    end
+end
 local LICENSE_URL = 'https://raw.githubusercontent.com/nukzar450-source/lic/main/p.txt'
 local DIR = (type(gg) == 'table' and gg.getFile and gg.getFile() or '')
 DIR = (DIR:match('(.*/)') or '/sdcard/')
@@ -11,8 +23,8 @@ end
 
 local old_read = read
 function read(f)
-    if f == 'p.txt' and type(_G) == 'table' and type(_G.LOADER_LICENSE_TEXT) == 'string' and #_G.LOADER_LICENSE_TEXT > 0 then
-        return _G.LOADER_LICENSE_TEXT
+    if f == 'p.txt' and type(auth_session) == 'table' and type(auth_session.license_text) == 'string' and #auth_session.license_text > 0 then
+        return auth_session.license_text
     end
     return old_read(f)
 end
@@ -310,8 +322,14 @@ function get_device_id()
 end
 
 function require_license()
+    -- Validate presence and format of session token
+    if type(auth_session) ~= 'table' or type(auth_session.token) ~= 'string' or not auth_session.token:match('^SECURE_AUTH_') then
+        if type(os) == 'table' and type(os.exit) == 'function' then os.exit() end
+        return false
+    end
+
     local hwid = (type(_G) == 'table' and _G.LOADER_HWID) or nil
-    local license_text = (type(_G) == 'table' and _G.LOADER_LICENSE_TEXT) or nil
+    local license_text = (type(auth_session) == 'table' and auth_session.license_text) or nil
     if type(license_text) ~= 'string' or #license_text == 0 then
         if type(gg) == 'table' and type(gg.alert) == 'function' then
             gg.alert("Ошибка: Лицензия не найдена или пуста!")
@@ -1593,7 +1611,7 @@ end
 local _SCRIPT_ALREADY_STARTED = false
 
 local function startup_verifications()
-    if not (type(_G) == 'table' and _G.LOADER_AUTHORIZED) then
+    if not (type(auth_session) == 'table' and type(auth_session.token) == 'string' and auth_session.token:match('^SECURE_AUTH_')) then
         if type(os) == 'table' and type(os.exit) == 'function' then os.exit() end
         return false
     end
@@ -1618,11 +1636,10 @@ local function remove_sensitive_files()
 end
 
 local _ok_start, _err_start = pcall(function()
-    if not (type(_G) == 'table' and _G.LOADER_AUTHORIZED == true) then
-        notify_and_exit('Device not authorized by loader')
+    if not (type(auth_session) == 'table' and type(auth_session.token) == 'string' and auth_session.token:match('^SECURE_AUTH_')) then
+        if type(os) == 'table' and type(os.exit) == 'function' then os.exit() end
     end
-    
-    
+
     remove_sensitive_files()
 end)
 if not _ok_start then
@@ -1642,6 +1659,8 @@ local function freeze_critical_state()
         _G.LOADER_SCRIPT_VERIFIED = nil
         _G.LOADER_SCRIPT_HASH = nil
     end
+    -- Clear session data from local scope to reduce in-memory exposure of token
+    auth_session = nil
 end
 
 freeze_critical_state()
@@ -1681,4 +1700,5 @@ while RUNNING do
 end
 
 hardened_exit()
+
 
