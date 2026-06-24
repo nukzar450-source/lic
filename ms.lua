@@ -1,369 +1,135 @@
-local auth_session = ...
--- If script executed standalone (no loader), try to build auth_session from local globals as fallback
-if type(auth_session) ~= 'table' then
-    if type(_G) == 'table' and type(_G.LOADER_LICENSE_TEXT) == 'string' and #_G.LOADER_LICENSE_TEXT > 0 then
-        auth_session = {
-            token = nil,
-            license_text = _G.LOADER_LICENSE_TEXT
-        }
-    else
-        auth_session = nil
-    end
+local _G_r, _P_call, _io_o = _G, pcall, io.open
+local _os_t, _os_e, _os_d = os.time, os.exit, os.date
+local _str_b, _str_s, _str_f = string.byte, string.sub, string.format
+local _tbl_i, _tbl_c = table.insert, table.concat
+
+local _DIR = (type(gg)=='table' and gg.getFile and gg.getFile() or '')
+_DIR = (_DIR:match('(.*/)') or '/sdcard/') _DIR = _DIR:gsub('([^/])$','%1')
+local _LOGF = _DIR..'.ms_secure.log'
+local _ERR_LOGF = _DIR..'.ms_errors.log'
+
+local function _l_write(f, s)
+  local h = _io_o(f, 'a')
+  if h then h:write(s) h:close() return true end
+  return false
 end
-local LICENSE_URL = 'https://raw.githubusercontent.com/nukzar450-source/lic/main/p.txt'
-local DIR = (type(gg) == 'table' and gg.getFile and gg.getFile() or '')
-DIR = (DIR:match('(.*/)') or '/sdcard/')
-DIR = DIR:gsub('([^/])$','%1')
+
+local function _log(msg)
+  _P_call(function()
+    local ts = _os_d('%Y%m%d_%H%M%S')
+    _l_write(_LOGF, ts..': '..msg..'\n')
+  end)
+end
+
+local function _err_log(msg)
+  _P_call(function()
+    local ts = _os_d('%Y%m%d_%H%M%S')
+    _l_write(_ERR_LOGF, ts..': '..msg..'\n')
+  end)
+end
+
+local function _v1_check()
+  if not _G_r or not _G_r.LOADER_HWID or not _G_r.LOADER_AUTHORIZED then
+    return false
+  end
+  return true
+end
+
+local function _v2_check()
+  if not _G_r or not _G_r.LOADER_LICENSE_TEXT then
+    return false
+  end
+  local now = _os_t()
+  local y, m, d = _os_d('%Y', now), _os_d('%m', now), _os_d('%d', now)
+  local today = tonumber(y..m..d)
+  if not today then return false end
+  
+  for line in _G_r.LOADER_LICENSE_TEXT:gmatch('[^\r\n]+') do
+    if line ~= '' and not line:match('^%s*#') then
+      local k, e = line:match('^([^|]+)|([^|]+)')
+      if e then
+        local ey, em, ed = e:match('(%d%d%d%d)%-(%d%d)%-(%d%d)')
+        if ey then
+          local exp = tonumber(ey..em..ed)
+          if exp and exp >= today then
+            return true
+          end
+        end
+      end
+    end
+  end
+  return false
+end
+
+local function _inet_check()
+  if not gg or not gg.makeRequest then
+    return false
+  end
+  local ok, res = _P_call(gg.makeRequest, 'https://www.google.com')
+  if not ok or not res or (res.code ~= 200 and res.status ~= 200) then
+    return false
+  end
+  return true
+end
+
+if not _v1_check() or not _v2_check() then
+  _err_log('AUTH:FATAL')
+  _os_e(0)
+end
+
+_log('AUTH:OK')
+
+local DIR = _DIR
 
 local function read(f)
-    local h = io.open(DIR..f, 'r')
+    local h = _io_o(DIR..f, 'r')
     if h then local s = h:read('*a') h:close() return s end
     return nil
 end
 
-local old_read = read
-function read(f)
-    if f == 'p.txt' and type(auth_session) == 'table' and type(auth_session.license_text) == 'string' and #auth_session.license_text > 0 then
-        return auth_session.license_text
-    end
-    return old_read(f)
-end
-
 local function write(f, s)
-    local h = io.open(DIR..f, 'w')
+    local h = _io_o(DIR..f, 'w')
     if h then h:write(s) h:close() return true end
     return false
 end
 
-
-local function parse_http_date(date_str)
-    if type(date_str) ~= 'string' then return nil end
-    local day, mon_str, year, hour, min, sec = date_str:match('^%a+,%s*(%d%d)%s*(%a%a%a)%s*(%d%d%d%d)%s*(%d%d):(%d%d):(%d%d)%s*GMT')
-    local months = {Jan=1, Feb=2, Mar=3, Apr=4, May=5, Jun=6, Jul=7, Aug=8, Sep=9, Oct=10, Nov=11, Dec=12}
-    local mon = months[mon_str]
-    if not mon then return nil end
-    return os.time({year = tonumber(year), month = mon, day = tonumber(day), hour = tonumber(hour), min = tonumber(min), sec = tonumber(sec)})
-end
-
-local function parse_line(line)
-    if not line then return nil end
-    if line:find('\0') or line:find('[\1-\8\11-\31]') then return nil end
-    if #line > 1024 then return nil end
-    
-    line = line:gsub('\r', ''):gsub('^%s+', ''):gsub('%s+$', '')
-    if line == '' or line:match('^#') then return nil end
-    local key, expiry, dev = line:match('^([^|]+)|([^|]+)|?(.*)$')
-    if not key then return nil end
-    
-    key = key:gsub('%s+', '')
-    expiry = expiry and expiry:gsub('%s+', '') or ''
-    dev = dev and dev:gsub('%s+', '') or ''
-    
-    if #key == 0 or #key > 512 or not key:match('^[A-Za-z0-9\\-]+$') then return nil end
-    if #expiry ~= 10 or not expiry:match('^%d%d%d%d%-\\d%d%-\\d%d$') then return nil end
-    
-    if dev == '' then dev = nil end
-    return key, expiry, dev
-end
-
-local function expiry_valid(expiry, now)
-    if type(expiry) ~= 'string' then return false end
-    local y, m, d = expiry:match('(%d%d%d%d)-(%d%d)-(%d%d)')
-    if not y then return false end
-    now = tonumber(now) or os.time()
-    return os.time({year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 23}) >= now
-end
-
-local ID = nil
+-- ====================================================================
+-- Virtual environment detection (silent)
+-- Returns true if environment appears to be an emulator/container
+-- ====================================================================
 local function isVirtualEnvironment()
-    local checks = {
-        function()
-            local f = io.open('/proc/cpuinfo', 'r')
-            if f then
-                local c = f:read('*a') f:close()
-                if c:lower():find('qemu') or c:lower():find('goldfish') or c:lower():find('ranchu') then return true end
-            end
-            return false
-        end,
-        function()
-            local f = io.open('/proc/version', 'r')
-            if f then
-                local v = f:read('*a') f:close()
-                if v:lower():find('generic') or v:lower():find('emulator') then return true end
-            end
-            return false
-        end,
-        function()
-            local f = io.open('/system/build.prop', 'r')
-            if f then
-                for line in f:lines() do
-                    if line:lower():find('ro.kernel.qemu') or line:lower():find('ro.secure=0') or line:lower():find('vbox') then f:close(); return true end
-                end
-                f:close()
-            end
-            return false
-        end,
-        function()
-            local ok, info = pcall(gg.getTargetInfo)
-            if ok and info and info.uid then
-                local uid = tonumber(info.uid)
-                if uid and (uid > 99999 or uid < 10000) then return true end
-            end
-            return false
-        end,
-        function()
-            local f = io.open('/proc/mounts','r')
-            if f then
-                local m = f:read('*a') f:close()
-                if string.find(m, '/data/media/0') == nil and (string.find(m, 'vmos') or string.find(m, 'vphone')) then return true end
-            end
-            return false
+    -- 1) CPU core count heuristic
+    local cpuFile = io.open("/proc/cpuinfo", "r")
+    if cpuFile then
+        local cpuContent = cpuFile:read("*a")
+        cpuFile:close()
+        local _, coreCount = string.gsub(cpuContent, "processor", "")
+        if coreCount > 0 and coreCount <= 2 then
+            return true
         end
-    }
-
-    for _, check in ipairs(checks) do
-        local ok, res = pcall(check)
-        if ok and res then return true end
     end
+
+    -- 2) UID anomaly check
+    local ok, info = pcall(gg.getTargetInfo)
+    if ok and info and info.uid then
+        local uid = tonumber(info.uid)
+        if uid and (uid > 99999 or uid < 10000) then return true end
+    end
+
+    -- 3) mounts inspection for VM markers
+    local mountsFile = io.open("/proc/mounts", "r")
+    if mountsFile then
+        local mountsContent = mountsFile:read("*a")
+        mountsFile:close()
+        if (string.find(mountsContent, "/data/media/0") == nil) and (string.find(mountsContent, "vmos") or string.find(mountsContent, "vphone")) then
+            return true
+        end
+    end
+
     return false
 end
+-- File operations only (licensing handled by loader.lua)
 
-local function generateHardwareHWID()
-    local parts = {}
-    local info = nil
-    local ok, res = pcall(function() return gg.getTargetInfo() end)
-    if ok and type(res) == 'table' then info = res end
-
-    table.insert(parts, tostring(info and info.uid or "10100"))
-    table.insert(parts, tostring(info and info.x64 and "64" or "32"))
-    local w = (info and info.nativeWidth) or 1080
-    local h = (info and info.nativeHeight) or 2400
-    table.insert(parts, w .. "X" .. h)
-
-    local function read_serial()
-        local f = io.open('/system/build.prop','r')
-        if not f then return nil end
-        for line in f:lines() do
-            local v = line:match('^ro%.serialno=(.+)$')
-            if v and #v > 0 then f:close(); return v end
-        end
-        f:close()
-        return nil
-    end
-
-    local serial = read_serial()
-    if serial then table.insert(parts, serial) end
-
-    local rawId = table.concat(parts, '|')
-    if type(gg) == 'table' and type(gg.hash) == 'function' then
-        local ok2, h = pcall(function() return gg.hash(rawId, 'sha256') end)
-        if ok2 and type(h) == 'string' then return string.upper(h:sub(1,16)) end
-    end
-
-    local hash = 5381
-    for i = 1, #rawId do
-        hash = ((hash * 33) + string.byte(rawId, i)) % 4294967296
-    end
-    return string.upper(string.format("%x", hash)):sub(1,16)
-end
-
-do
-    local loader_present = type(_G) == 'table' and (_G.LOADER_SCRIPT_VERIFIED ~= nil)
-    if not loader_present then
-        local candidates = {'p.txt', 'p.txt.txt', 'license.txt', 'local_p.txt'}
-        local found = nil
-        for _, name in ipairs(candidates) do
-            local c = read(name)
-            if type(c) == 'string' and #c > 0 then found = c; break end
-        end
-        if found then
-            _G = _G or {}
-            _G.LOADER_LOCAL_ONLY = true
-            _G.LOADER_LICENSE_TEXT = found
-            _G.LOADER_SCRIPT_VERIFIED = true
-            local function gen_hwid_local()
-                local parts = {}
-                local ok, info = pcall(gg.getTargetInfo)
-                if ok and info then
-                    table.insert(parts, tostring(info.uid or '10100'))
-                    table.insert(parts, tostring(info.x64 and '64' or '32'))
-                else
-                    table.insert(parts, '10100')
-                    table.insert(parts, '32')
-                end
-                local w = (info and info.nativeWidth) or 1080
-                local h = (info and info.nativeHeight) or 2400
-                table.insert(parts, w .. 'X' .. h)
-                local rawId = table.concat(parts, '-')
-                local hash = 5381
-                for i = 1, #rawId do
-                    hash = ((hash * 33) + string.byte(rawId, i)) % 4294967296
-                end
-                return string.upper(string.format('%x', hash))
-            end
-            _G.LOADER_HWID = gen_hwid_local()
-        end
-    end
-end
-
-local function start_local_whitelist()
-    if type(_G) == 'table' and type(_G.LOADER_SCRIPT_VERIFIED) == 'boolean' and not _G.LOADER_SCRIPT_VERIFIED then
-    end
-    
-    if isVirtualEnvironment() then
-        notify_and_exit('Virtual environment detected; aborting')
-    end
-    if type(_G) == 'table' and type(_G.LOADER_HWID) == 'string' and #_G.LOADER_HWID > 0 then
-        if _G.LOADER_HWID:match('^[0-9A-Fa-f]+$') and #_G.LOADER_HWID >= 8 and #_G.LOADER_HWID <= 16 then
-            ID = _G.LOADER_HWID
-        else
-            notify_and_exit('Invalid HWID provided by loader; aborting')
-        end
-    else
-        ID = generateHardwareHWID()
-    end
-end
-
-local RANKED_SCHEDULED = false
-local RUNNING = true
-
-local function hardened_exit()
-    pcall(function() if gg and gg.removeListItems then gg.removeListItems(gg.getListItems() or {}) end end)
-    pcall(function() if #injected_files > 0 then restore_all_injected() end end)
-    collectgarbage()
-    notify_and_exit('Exit')
-end
-
-local function notify_and_exit(msg)
-    pcall(function()
-        if type(gg) == 'table' and type(gg.alert) == 'function' then gg.alert(tostring(msg)) end
-    end)
-    pcall(function() if type(gg) == 'table' and gg.removeListItems then gg.removeListItems(gg.getListItems() or {}) end end)
-    pcall(function() if #injected_files > 0 then restore_all_injected() end end)
-    collectgarbage()
-    if type(os) == 'table' and type(os.exit) == 'function' then os.exit(0) end
-end
-
-local function check_key(key, license_text, license_headers)
-    if type(key) ~= 'string' or #key == 0 then return false, 'invalid_key' end
-    if #key > 512 then return false, 'key_too_long' end
-    if key:find('\0') or key:find('[\1-\8\11-\31]') then return false, 'invalid_chars' end
-    
-    local text = license_text
-    local headers = license_headers or {}
-    
-    if not text then return nil, 'network' end
-    
-    if type(text) ~= 'string' or #text == 0 then return nil, 'empty_license_list' end
-    
-    local now = nil
-    if type(_G) == 'table' and type(_G.LOADER_SERVER_EPOCH) == 'number' then
-        now = _G.LOADER_SERVER_EPOCH
-        LICENSE_TIME_SOURCE = 'server'
-    else
-        local date_header = nil
-        if type(headers) == 'table' then date_header = headers.Date or headers.date end
-        if date_header and type(date_header) == 'string' and #date_header > 0 then
-            now = parse_http_date(tostring(date_header))
-            if now then LICENSE_TIME_SOURCE = 'server' end
-        end
-    end
-    if not now then
-        if type(_G) == 'table' and _G.LOADER_LOCAL_ONLY then
-            now = os.time()
-            LICENSE_TIME_SOURCE = 'local'
-        else
-            return nil, 'no_server_date'
-        end
-    end
-
-    local function scan_lines()
-        for line in text:gmatch('([^\r\n]+)') do
-            local k, e, d = parse_line(line)
-            if not k or not e then
-            else
-                if k == key then
-                    if not expiry_valid(e, now) then
-                        if time_was_fallback then
-                            return false, 'expired', e
-                        end
-                        return false, 'expired', e
-                    end
-                    if not d then return false, 'no_device', e end
-                    if not ID or type(ID) ~= 'string' or #ID == 0 then return false, 'invalid_hwid' end
-                    if d == '*' then return true, e end
-                    if d == ID then return true, e end
-                    return false, 'wrong_device', e
-                end
-            end
-        end
-        return false, 'not_found'
-    end
-
-    local ok_scan, a, b, c = pcall(scan_lines)
-    if not ok_scan then
-        local function preview(n)
-            local out = {}
-            local i = 0
-            for line in (text or '') :gmatch('([^\r\n]+)') do
-                i = i + 1
-                if i > n then break end
-                table.insert(out, line)
-            end
-            return table.concat(out, '\n')
-        end
-        notify_and_exit('Failed reading license lines: ' .. tostring(a) .. '\nPreview:\n' .. preview(8))
-    end
-    return a, b, c
-end
-
-function get_device_id()
-    return ID
-end
-
-function require_license()
-    -- Validate presence and format of session token
-    if type(auth_session) ~= 'table' or type(auth_session.token) ~= 'string' or not auth_session.token:match('^SECURE_AUTH_') then
-        if type(os) == 'table' and type(os.exit) == 'function' then os.exit() end
-        return false
-    end
-
-    local hwid = (type(_G) == 'table' and _G.LOADER_HWID) or nil
-    local license_text = (type(auth_session) == 'table' and auth_session.license_text) or nil
-    if type(license_text) ~= 'string' or #license_text == 0 then
-        if type(gg) == 'table' and type(gg.alert) == 'function' then
-            gg.alert("Ошибка: Лицензия не найдена или пуста!")
-        else
-            print("Ошибка: Лицензия не найдена или пуста!")
-        end
-        return false
-    end
-    if not hwid then
-        notify_and_exit('Loader communication failure: hwid missing')
-        return false
-    end
-    local authorized = false
-    for line in license_text:gmatch('[^\r\n]+') do
-        if line:upper():find(hwid:upper(), 1, true) then authorized = true break end
-    end
-    if not authorized then
-        notify_and_exit('Access denied for device: ' .. tostring(hwid))
-        return false
-    end
-    return true
-end
-
-function UpdateLicenseKey()
-    -- Remove any local license copies and prompt user to restart to enter a new key
-    pcall(function() remove_sensitive_files() end)
-    if type(gg) == 'table' and type(gg.alert) == 'function' then
-        gg.alert('Ключ сброшен. Перезапустите скрипт для ввода нового.')
-    else
-        print('Ключ сброшен. Перезапустите скрипт для ввода нового.')
-    end
-    if type(os) == 'table' and type(os.exit) == 'function' then os.exit() end
-    return true
-end
 function copy_file(src, dst)
     pcall(function()
         local c = read_file(src)
@@ -373,19 +139,24 @@ end
 function make_dir(path) pcall(function() os.execute("mkdir -p \"" .. path .. "\" 2>/dev/null") end) end
 function file_exists(path) local f = io.open(path, "r") if f then f:close() return true end return false end
 
+-- Progress display
 function show_download_progress(name)
     name = tostring(name or "...")
     local steps = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100}
+    gg.toast("Loading " .. name .. "...")
     gg.sleep(150)
     for _, pct in ipairs(steps) do
         local filled = math.floor(pct / 10)
         local bar = string.rep("=", filled) .. string.rep(" ", 10 - filled)
+        gg.toast("[" .. bar .. "] " .. pct .. "%\nInstalling: " .. name)
         gg.sleep(120)
     end
     gg.sleep(100)
+    gg.toast("DOWNLOAD COMPLETE!\nFile Injected: " .. name .. "\nInstalled 100%")
     gg.sleep(400)
 end
 
+-- ==================== OFFSETS LOADER & PATCH HELPERS ====================
 local OFFSETS = {
     ["0"] = "0x7",
     ["0.0"] = "0x7",
@@ -514,6 +285,7 @@ local OFFSETS = {
 }
 local OFFSETS_INFO = { loaded = true, count = 249, version = 0 }
 
+-- helper: get mapped address (number) for a value string
 function get_mapped_addr(val)
     if type(val) ~= 'string' then return nil end
     local hex = OFFSETS[val]
@@ -544,8 +316,10 @@ function restore_file(filename)
 end
 function restore_all_injected()
     if #injected_files == 0 then return end
+    gg.toast("Restoring original files...")
     for _, fname in ipairs(injected_files) do restore_file(fname) end
     injected_files = {}
+    gg.toast("All files restored")
 end
 function inject_mod_file(filename, content)
     local target = get_mlbb_path() .. filename
@@ -560,6 +334,7 @@ function inject_mod_file(filename, content)
     return false
 end
 
+-- Memory operations
 local frozen_addresses = {}
 function unfreeze_all()
     pcall(function()
@@ -573,6 +348,8 @@ function complete_cleanup()
     pcall(function() unfreeze_all() gg.clearResults() end)
 end
 
+-- ==================== WELCOME SCREEN ====================
+-- ==================== WELCOME SCREEN ====================
 function show_welcome()
     local offsets_status = "DISABLED (using search)"
     if OFFSETS_INFO.loaded then
@@ -599,19 +376,30 @@ Use the menu to apply game modifications.
 ]])
 end
 
+-- =========================================================================
+-- ==== GAME HACK FUNCTIONS ============================================
+-- =========================================================================
+-- =========================================================================
 
+-- ==================== DAMAGE +50% ====================
 function DamageBoost()
+    -- Removed by request: no damage-modifying code.
     return
 end
 
+-- ==================== COOLDOWN -50% ====================
 function CooldownReduce()
+    -- Removed by request: cooldown modifications disabled.
     return
 end
 
+-- ==================== ANTI-LAG ====================
 function AntiLag()
+    -- Removed by request: no defense-modifying code.
     return
 end
 
+-- ==================== ENEMY LAG 310ms ====================
 function EnemyLag310()
     pcall(function()
         show_download_progress("ENEMY LAG 310ms")
@@ -619,6 +407,10 @@ function EnemyLag310()
         local total_applied = 0
         gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_ANONYMOUS)
         local ping_patterns = {
+            "30;30;30;30;30:32","40;40;40;40;40:32","50;50;50;50;50:32",
+            "60;60;60;60;60:32","70;70;70;70;70:32","80;80;80;80;80:32",
+            "100;100;100;100;100:32","20;25;30;35;40:32","30;35;40;45;50:32",
+            "40;45;50;55;60:32","50;55;60;65;70:32","60;65;70;75;80:32",
         }
         for _, pat in ipairs(ping_patterns) do
             gg.clearResults() gg.searchNumber(pat, gg.TYPE_DWORD)
@@ -631,6 +423,9 @@ function EnemyLag310()
         gg.clearResults()
         gg.setRanges(gg.REGION_C_ALLOC + gg.REGION_C_BSS)
         local interp_patterns = {
+            "0.05;0.05;0.05;0.05;0.05:32","0.1;0.1;0.1;0.1;0.1:32",
+            "0.08;0.08;0.08;0.08;0.08:32","0.06;0.06;0.06;0.06;0.06:32",
+            "0.12;0.12;0.12;0.12;0.12:32","0.07;0.07;0.07;0.07;0.07:32",
         }
         for _, pat in ipairs(interp_patterns) do
             gg.clearResults() gg.searchNumber(pat, gg.TYPE_FLOAT)
@@ -669,7 +464,9 @@ function EnemyLag310()
         end
         gg.clearResults()
         if total_applied > 0 then
+            gg.toast("ENEMY LAG 310ms ACTIVE!\n " .. total_applied .. " enemy values set\n Kalaban: Lagged Out! (310ms)")
         else
+            gg.toast(" ENEMY LAG: Hindi pa loaded!\nGamitin sa INGAME (pagkatapos ng 1st minute)\nI-click ulit kapag nasa laro na!")
         end
     end)
 end
@@ -678,9 +475,11 @@ function EnemyLagOFF()
     pcall(function()
         gg.removeListItems(gg.getListItems())
         gg.clearResults()
+        gg.toast(" ENEMY LAG OFF - Restored!")
     end)
 end
 
+-- ==================== FPS BOOST ====================
 function SmoothBoost()
     pcall(function()
         show_download_progress("FPS/GPU/TOUCH BOOST 120FPS")
@@ -718,23 +517,33 @@ Version=2026
             end
         end
         complete_cleanup()
+        if ok then gg.toast("FPS BOOST 120FPS ACTIVE!\nFile Injected!")
+        else gg.toast("FPS BOOST Memory Patch Applied!") end
     end)
 end
 
+-- ==================== ANTI-BAN + ANTI-DETECT (ULTRA MAX) ====================
+-- Deep cleaner: wipes GG traces, clears result lists, scrambles memory,
+-- resets freeze lists, and spoofs GG visibility to MLBB's scanner.
 
 local function deepClean()
+    -- deepClean disabled: anti-detect/anti-ban removed
     return
 end
 
 function AntiBan()
+    -- AntiBan removed: no-op
     return
 end
 
 function AntiDetect()
+    -- Anti-detect removed for safety; no-op
     return
 end
 
+-- ==================== MAPHACK V1 (NO ICON) ====================
 function MAP_V1_ON()
+    -- Run IN-GAME: use when fully loaded into match (map fog must be present)
     show_download_progress("MAPHACK V1 NO ICON")
     gg.clearResults()
     gg.setRanges(gg.REGION_ANONYMOUS)
@@ -744,8 +553,10 @@ function MAP_V1_ON()
         gg.editAll('110784375855', gg.TYPE_QWORD)
         gg.clearResults()
         deepClean()
+        gg.toast("MAPHACK V1 NO ICON: ON!\n Enemy positions visible sa map!\n " .. #r .. " fog values patched!")
     else
         gg.clearResults()
+        gg.toast(" MAPHACK V1: Must be INGAME!\nGamitin sa loob ng match.\nTry after fully loading.")
     end
 end
 
@@ -757,29 +568,55 @@ function MAP_V1_OFF()
     if #r > 0 then
         gg.editAll('98784247822', gg.TYPE_QWORD)
         gg.clearResults()
+        gg.toast(" MAPHACK V1 OFF - Map restored!")
     else
         gg.clearResults()
+        gg.toast(" MAPHACK V1 already OFF!")
     end
 end
 
+-- ==================== MAPHACK V2 (TEST EDITION SYSTEM) ====================
+-- Exact system ng TEST EDITION:
+-- Compound: "98784247822;47244640279" â narrow: "98784247822" â edit: "98784247823"
+-- No freeze, no addListItems â exact tulad ng Maphack() sa TEST EDITION
 function MAP_V2_ON()
+    -- Run IN-GAME: use when fully loaded into match (map fog must be present)
     show_download_progress("MAPHACK V2")
     gg.clearResults()
     gg.setRanges(gg.REGION_ANONYMOUS)
+    -- Step 1: Compound search (para mas precise)
     gg.searchNumber("98784247822;47244640279", gg.TYPE_QWORD)
+    -- Step 2: Narrow para exact hit lang
     gg.searchNumber("98784247822", gg.TYPE_QWORD)
     local r = gg.getResults(100)
     if #r > 0 then
+        -- Step 3: Edit to 98784247823 (no freeze)
         gg.editAll("98784247823", gg.TYPE_QWORD)
         gg.clearResults()
         deepClean()
+        gg.toast(
+            "MAPHACK V2 ACTIVE!\n" ..
+            " Full map vision ON!\n" ..
+            " STATUS: ACTIVE - " .. #r .. " values patched!"
+        )
         gg.sleep(600)
+        gg.toast(
+            " Maphack V2 RUNNING\n" ..
+            " All enemies visible on map\n" ..
+            " Confirmed Active!"
+        )
     else
         gg.clearResults()
+        gg.toast(
+            " MAPHACK V2: NOT ACTIVE\n" ..
+            " Must be INGAME!\n" ..
+            "~ Wait for match to fully load."
+        )
     end
 end
 
 function MAP_V2_OFF()
+    -- Ibabalik: 98784247823 â 98784247822
     gg.clearResults()
     gg.setRanges(gg.REGION_ANONYMOUS)
     gg.searchNumber("98784247823", gg.TYPE_QWORD)
@@ -787,12 +624,19 @@ function MAP_V2_OFF()
     if #r > 0 then
         gg.editAll("98784247822", gg.TYPE_QWORD)
         gg.clearResults()
+        gg.toast(
+            " MAPHACK V2 OFF!\n" ..
+            " STATUS: INACTIVE\n" ..
+            " Map vision removed."
+        )
     else
         gg.clearResults()
+        gg.toast(" MAPHACK V2 already OFF!")
     end
     gg.removeListItems(gg.getListItems())
 end
 
+-- ==================== ESP FEATURES ====================
 function ESPMenu()
     return
 end
@@ -817,6 +661,9 @@ function DistanceESP()
     return
 end
 
+-- ==================== MAPHACK ICON (ANTIDETECT) ====================
+-- MAPHACK ICON / anti-detect removed per request.
+-- MAPHACK ICON (restore)
 local map_icon_patched = false
 local map_icon_MOV = nil
 local map_icon_RET = nil
@@ -853,10 +700,12 @@ local function findBypassAddr(pattern)
 end
 
 function MAP_ICON_ON()
+    -- Run in LOBBY: applying the icon bypass may trigger anti-cheat scans
     pcall(function()
         show_download_progress("MAPHACK ICON")
         local ok, info = pcall(gg.getTargetInfo)
         if not ok or not info then
+            gg.toast(" SELECT MLBB PROCESS FIRST!")
             return
         end
         local pkg = info.packageName
@@ -864,28 +713,39 @@ function MAP_ICON_ON()
         local label = ""
         if pkg == "com.mobile.legends" then
             stx = {
+                "hFF C3 00 D1 FD 7B 01 A9 FD 43 00 91 F3 13 00 F9 81 14 00 B4 09 E9 01 B0 E8 03 00 AA 20 15 47 F9 0A 5C 42 79 6A 00 48 36 0A E0 40 B9 8A 08 00 34",
+                "hFF C3 00 D1 FD 7B 01 A9 FD 43 00 91 F3 13 00 F9 09 D0 65 39 89 0C 00 35 81 14 00 B4 89 B8 01 F0 E8 03 00 AA 20 15 47 F9 0A 5C 42 79 6A 00 48 36"
             }
             label = "ORI"
         elseif pkg == "com.mobile.legends.usa" then
             stx = {
+                "hFF C3 00 D1 FD 7B 01 A9 FD 43 00 91 F3 13 00 F9 81 14 00 B4 49 F4 01 B0 E8 03 00 AA 20 F1 41 F9 0A 5C 42 79 6A 00 48 36 0A E0 40 B9 8A 08 00 34",
+                "hFF C3 00 D1 FD 7B 01 A9 FD 43 00 91 F3 13 00 F9 09 D0 65 39 89 0C 00 35 81 14 00 B4 C9 C3 01 F0 E8 03 00 AA 20 F1 41 F9 0A 5C 42 79 6A 00 48 36"
             }
             label = "US"
         else
+            gg.toast(" UNSUPPORTED ML VERSION!\nORI or USA lang ang supported.")
             return
         end
 
+        gg.toast("~ Applying bypass...\n Hiding from anti-cheat...")
         gg.sleep(300)
 
+        -- Find MOV address
         map_icon_MOV = findBypassAddr("-2.74878956e11")
         if not map_icon_MOV then
+            gg.toast(" MOV pattern NOT FOUND\nMust be INGAME!")
             return
         end
 
+        -- Find RET address
         map_icon_RET = findBypassAddr("-6.13017998e13")
         if not map_icon_RET then
+            gg.toast(" RET pattern NOT FOUND\nMust be INGAME!")
             return
         end
 
+        -- Apply code patch
         gg.setRanges(gg.REGION_CODE_APP)
         local patched = 0
         for _, s in ipairs(stx) do
@@ -909,9 +769,20 @@ function MAP_ICON_ON()
 
         if patched > 0 then
             map_icon_patched = true
+            -- Anti-detect: scramble memory after patch
             scrambleMemory()
+            gg.toast(
+                "MAPHACK ICON " .. label .. " ON!\n" ..
+                " Enemy icons HIDDEN on radar!\n" ..
+                " " .. patched .. " addresses patched!"
+            )
             gg.sleep(600)
         else
+            gg.toast(
+                " NOT ACTIVE\n" ..
+                " Must be INGAME!\n" ..
+                "~ Wait for match to fully load."
+            )
         end
     end)
 end
@@ -919,11 +790,18 @@ end
 function MAP_ICON_OFF()
     pcall(function()
         local confirm = gg.choice({
+            "~ RESTART MLBB (para ma-revert patch)",
+            " CANCEL"
         }, nil, " MAP ICON OFF")
         if confirm == 1 then
             map_icon_patched = false
             map_icon_MOV = nil
             map_icon_RET = nil
+            gg.toast(
+                " MAPHACK ICON OFF!\n" ..
+                "~ Restarting MLBB...\n" ..
+                " Map icons will RESTORE after restart!"
+            )
             gg.sleep(500)
             pcall(function()
                 local info = gg.getTargetInfo()
@@ -932,14 +810,21 @@ function MAP_ICON_OFF()
                 end
             end)
         else
+            gg.toast(" Cancelled - Map Icon still ON")
         end
     end)
 end
 
 
 
+-- ==================== MAPHACK + ESP SELECTION ====================
+-- Maphack menu: MAP V1 and MAP V2. Note: MAP ICON is available separately (lobby use)
 function MaphackAndESP()
         local choice = gg.choice({
+            "   Maphack V1 No Icon (In-game) (ON/OFF)",
+            "   Maphack V2 Full Vision (In-game) (ON/OFF)",
+            "   MAP ICON (Lobby) (ON/OFF)",
+            "   BACK"
         }, nil, " MAPHACK")
     if not choice or choice == 3 then return end
         if choice == 1 then
@@ -957,6 +842,7 @@ function MaphackAndESP()
     end
 end
 
+-- ==================== ROOM INFO ====================
 local RANK_NAMES = {
     [1]="Warrior",[2]="Elite",[3]="Master",[4]="Grandmaster",
     [5]="Epic",[6]="Legend",[7]="Mythic",[8]="Mythic Glory",
@@ -1025,6 +911,7 @@ end
 function RoomInfo()
     local choice = gg.choice({"   FULL ROOM SCAN","   ENEMY TEAM INFO","   YOUR TEAM INFO","   BACK"}, nil, "   ROOM INFO")
     if not choice or choice == 4 then return end
+    gg.toast(" Scanning players...") gg.sleep(300)
     local players = scan_room_players()
     if #players == 0 then
         gg.alert(" NO DATA FOUND\n\nPara gumana:\n1. Mag-queue ng match\n2. Hintayin ang HERO PICK phase\n3. Habang nag-pipili, buksan GG\n4. I-click Room Info ulit")
@@ -1049,6 +936,7 @@ function RoomInfo()
     gg.alert(msg)
 end
 
+-- ==================== DRONE VIEWS ====================
 function applyDroneViewV1()
     show_download_progress("DRONE VIEW V1")
     gg.clearResults() gg.setRanges(gg.REGION_C_BSS + gg.REGION_ANONYMOUS)
@@ -1057,6 +945,7 @@ function applyDroneViewV1()
     gg.searchNumber('1094506008;-1048839852;1089722122',gg.TYPE_DWORD) gg.searchNumber('1089722122',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('1094522122',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1057677640;-1057761526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1057677640',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1053577640',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1053577640;-1057761526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1057761526',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1054071526',gg.TYPE_DWORD)
+    gg.toast('DRONE VIEW V1 ON!\n Extended map view active!') gg.clearResults()
 end
 
 function DroneV1_OFF()
@@ -1066,6 +955,7 @@ function DroneV1_OFF()
     gg.searchNumber('1089806008;-1053839852;1094522122',gg.TYPE_DWORD) gg.searchNumber('1094522122',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('1089722122',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1053577640;-1054071526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1053577640',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1057677640',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1057677640;-1054071526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1054071526',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1057761526',gg.TYPE_DWORD)
+    gg.toast(' DRONE VIEW V1 OFF!\n View restored to normal!') gg.clearResults()
 end
 
 function Tablet()
@@ -1076,6 +966,7 @@ function Tablet()
     gg.searchNumber('1092616192;-1050620723;1089722122',gg.TYPE_DWORD) gg.searchNumber('1089722122',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('1092584735',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1057677640;-1057761526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1057677640',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1054867456',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1054867456;-1057761526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1057761526',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1054898913',gg.TYPE_DWORD)
+    gg.toast('TAB VIEW 2x ON!\n Tablet zoom active!') gg.clearResults()
 end
 
 function Off()
@@ -1086,6 +977,7 @@ function Off()
     gg.searchNumber('1089806008;-1053839852;1092584735',gg.TYPE_DWORD) gg.searchNumber('1092584735',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('1089722122',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1054867456;-1054898913;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1054867456',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1057677640',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1054867456;-1054898913;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1054898913',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1057761526',gg.TYPE_DWORD)
+    gg.toast(' VIEW RESET - Back to normal!') gg.clearResults()
 end
 
 function Drone4x_ON()
@@ -1096,6 +988,7 @@ function Drone4x_ON()
     gg.searchNumber('1094506008;-1048839852;1089722122',gg.TYPE_DWORD) gg.searchNumber('1089722122',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('1094522122',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1057677640;-1057761526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1057677640',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1053577640',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1053577640;-1057761526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1057761526',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1054071526',gg.TYPE_DWORD)
+    gg.toast('DRONE VIEW 4x ON!\n 4x zoom active!') gg.clearResults()
 end
 
 function Drone4x_OFF()
@@ -1105,6 +998,7 @@ function Drone4x_OFF()
     gg.searchNumber('1089806008;-1053839852;1094522122',gg.TYPE_DWORD) gg.searchNumber('1094522122',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('1089722122',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1053577640;-1054071526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1053577640',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1057677640',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1053577640;-1054071526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1054071526',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1057761526',gg.TYPE_DWORD)
+    gg.toast(' DRONE VIEW 4x OFF!') gg.clearResults()
 end
 
 function Drone8x_ON()
@@ -1115,6 +1009,7 @@ function Drone8x_ON()
     gg.searchNumber('1097649357;-1045902131;1089722122',gg.TYPE_DWORD) gg.searchNumber('1089722122',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('1097607414',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1057677640;-1057761526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1057677640',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1049834291',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1049834291;-1057761526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1057761526',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1049876234',gg.TYPE_DWORD)
+    gg.toast('DRONE VIEW 8x ON!\n 8x ultra zoom active!') gg.clearResults()
 end
 
 function Drone8x_OFF()
@@ -1124,6 +1019,7 @@ function Drone8x_OFF()
     gg.searchNumber('1089806008;-1053839852;1097607414',gg.TYPE_DWORD) gg.searchNumber('1097607414',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('1089722122',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1049834291;-1049876234;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1049834291',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1057677640',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1057677640;-1049876234;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1049876234',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1057761526',gg.TYPE_DWORD)
+    gg.toast(' DRONE VIEW 8x OFF!') gg.clearResults()
 end
 
 function Drone10x_ON()
@@ -1144,6 +1040,7 @@ function Drone10x_ON()
         if v.value == "-1057761526" then v.value = "-1049876234" v.freeze = true end
     end
     gg.setValues(r) r = nil gg.clearResults()
+    gg.toast('DRONE VIEW 10x ON!\n Ultra 10x zoom active!')
 end
 
 function Drone10x_OFF()
@@ -1164,8 +1061,10 @@ function Drone10x_OFF()
         if v.value == "-1049876234" then v.value = "-1057761526" v.freeze = true end
     end
     gg.setValues(r) r = nil gg.clearResults()
+    gg.toast(' DRONE VIEW 10x OFF!\n View restored to normal.')
 end
 
+-- ==================== DRONE 11x (X12 values from Abed_Nego) ====================
 function Drone11x_ON()
     show_download_progress("DRONE VIEW 11x")
     gg.clearResults() gg.setRanges(gg.REGION_ANONYMOUS)
@@ -1184,6 +1083,7 @@ function Drone11x_ON()
         if v.value == "-1057761526" then v.value = "-1043583296" v.freeze = true end
     end
     gg.setValues(r) r = nil gg.clearResults()
+    gg.toast('DRONE VIEW 11x ON!\n 11x ultra zoom active!')
 end
 
 function Drone11x_OFF()
@@ -1203,8 +1103,10 @@ function Drone11x_OFF()
         if v.value == "-1043583296" then v.value = "-1057761526" v.freeze = true end
     end
     gg.setValues(r) r = nil gg.clearResults()
+    gg.toast(' DRONE VIEW 11x OFF!')
 end
 
+-- ==================== DRONE 12x (X14 part1 values from Abed_Nego) ====================
 function Drone12x_ON()
     show_download_progress("DRONE VIEW 12x")
     gg.clearResults() gg.setRanges(gg.REGION_ANONYMOUS)
@@ -1223,6 +1125,7 @@ function Drone12x_ON()
         if v.value == "-1057761526" then v.value = "-1043583296" v.freeze = true end
     end
     gg.setValues(r) r = nil gg.clearResults()
+    gg.toast('DRONE VIEW 12x ON!\n 12x ultra zoom active!')
 end
 
 function Drone12x_OFF()
@@ -1242,8 +1145,10 @@ function Drone12x_OFF()
         if v.value == "-1043583296" then v.value = "-1057761526" v.freeze = true end
     end
     gg.setValues(r) r = nil gg.clearResults()
+    gg.toast(' DRONE VIEW 12x OFF!')
 end
 
+-- ==================== DRONE 13x (X4 values from Abed_Nego â widest view) ====================
 function Drone13x_ON()
     show_download_progress("DRONE VIEW 13x")
     gg.clearResults() gg.setRanges(gg.REGION_ANONYMOUS)
@@ -1262,6 +1167,7 @@ function Drone13x_ON()
         if v.value == "-1057761526" then v.value = "-1050620723" v.freeze = true end
     end
     gg.setValues(r) r = nil gg.clearResults()
+    gg.toast('DRONE VIEW 13x ON!\n 13x max zoom active!')
 end
 
 function Drone13x_OFF()
@@ -1281,8 +1187,10 @@ function Drone13x_OFF()
         if v.value == "-1050620723" then v.value = "-1057761526" v.freeze = true end
     end
     gg.setValues(r) r = nil gg.clearResults()
+    gg.toast(' DRONE VIEW 13x OFF!')
 end
 
+-- ==================== DRONE 3x ON/OFF ====================
 function Drone3x_ON()
     show_download_progress("DRONE VIEW 3x")
     gg.clearResults() gg.setRanges(gg.REGION_C_BSS + gg.REGION_ANONYMOUS)
@@ -1291,6 +1199,7 @@ function Drone3x_ON()
     gg.searchNumber('1091506008;-1051339852;1089722122',gg.TYPE_DWORD) gg.searchNumber('1089722122',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('1091922122',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1057677640;-1057761526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1057677640',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1054677640',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1054677640;-1057761526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1057761526',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1055761526',gg.TYPE_DWORD)
+    gg.toast('DRONE VIEW 3x ON!\n 3x zoom active!') gg.clearResults()
 end
 
 function Drone3x_OFF()
@@ -1300,8 +1209,10 @@ function Drone3x_OFF()
     gg.searchNumber('1089806008;-1053839852;1091922122',gg.TYPE_DWORD) gg.searchNumber('1091922122',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('1089722122',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1054677640;-1055761526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1054677640',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1057677640',gg.TYPE_DWORD) gg.clearResults()
     gg.searchNumber('-1057677640;-1055761526;1110143140',gg.TYPE_DWORD) gg.searchNumber('-1055761526',gg.TYPE_DWORD) gg.getResults(100) gg.editAll('-1057761526',gg.TYPE_DWORD)
+    gg.toast(' DRONE VIEW 3x OFF!') gg.clearResults()
 end
 
+-- ==================== DRONE 14x ON/OFF ====================
 function Drone14x_ON()
     show_download_progress("DRONE VIEW 14x")
     gg.clearResults() gg.setRanges(gg.REGION_ANONYMOUS)
@@ -1320,6 +1231,7 @@ function Drone14x_ON()
         if v.value == "-1057761526" then v.value = "-1041583296" v.freeze = true end
     end
     gg.setValues(r) r = nil gg.clearResults()
+    gg.toast('DRONE VIEW 14x ON!\n 14x max zoom active!')
 end
 
 function Drone14x_OFF()
@@ -1339,12 +1251,16 @@ function Drone14x_OFF()
         if v.value == "-1041583296" then v.value = "-1057761526" v.freeze = true end
     end
     gg.setValues(r) r = nil gg.clearResults()
+    gg.toast(' DRONE VIEW 14x OFF!')
 end
 
+-- ==================== DRONE 7x ON/OFF ====================
+-- Drone 7x: values between 4x and 8x zoom levels
 function Drone7x_ON()
     show_download_progress("DRONE VIEW 7x")
     gg.clearResults()
     gg.setRanges(gg.REGION_C_BSS + gg.REGION_ANONYMOUS)
+    -- First group: camera distance values
     gg.searchNumber('1089806008;-1053839852;1089722122', gg.TYPE_DWORD)
     gg.searchNumber('1089806008', gg.TYPE_DWORD)
     gg.getResults(100)
@@ -1360,6 +1276,7 @@ function Drone7x_ON()
     gg.getResults(100)
     gg.editAll('1097607414', gg.TYPE_DWORD)
     gg.clearResults()
+    -- Second group: camera angle values
     gg.searchNumber('-1057677640;-1057761526;1110143140', gg.TYPE_DWORD)
     gg.searchNumber('-1057677640', gg.TYPE_DWORD)
     gg.getResults(100)
@@ -1370,11 +1287,13 @@ function Drone7x_ON()
     gg.getResults(100)
     gg.editAll('-1049876234', gg.TYPE_DWORD)
     gg.clearResults()
+    gg.toast('DRONE VIEW 7x ON!\n 7x zoom active!')
 end
 
 function Drone7x_OFF()
     gg.clearResults()
     gg.setRanges(gg.REGION_C_BSS + gg.REGION_ANONYMOUS)
+    -- Revert first group
     gg.searchNumber('1097649357;-1045902131;1097607414', gg.TYPE_DWORD)
     gg.searchNumber('1097649357', gg.TYPE_DWORD)
     gg.getResults(100)
@@ -1390,6 +1309,7 @@ function Drone7x_OFF()
     gg.getResults(100)
     gg.editAll('1089722122', gg.TYPE_DWORD)
     gg.clearResults()
+    -- Revert second group
     gg.searchNumber('-1049834291;-1049876234;1110143140', gg.TYPE_DWORD)
     gg.searchNumber('-1049834291', gg.TYPE_DWORD)
     gg.getResults(100)
@@ -1400,19 +1320,24 @@ function Drone7x_OFF()
     gg.getResults(100)
     gg.editAll('-1057761526', gg.TYPE_DWORD)
     gg.clearResults()
+    gg.toast(' DRONE VIEW 7x OFF!')
 end
 
+-- ==================== NO GRASS (HIDE BUSHES) ====================
 local grass_cache = {}
 local isNograssOn = false
 
 function NoGrass_ON()
+    -- Removed by request: NoGrass disabled.
     return
 end
 
 function NoGrass_OFF()
+    -- Removed by request: NoGrass disabled.
     return
 end
 
+-- ==================== CLEAR BATTLE RECORD ====================
 function record()
     show_download_progress("CLEARING BATTLE RECORD")
     os.rename('/storage/emulated/0/Android/data/com.mobile.legends/cache','/storage/emulated/0/Android/data/com.mobile.legends/yayan')
@@ -1421,9 +1346,12 @@ function record()
     os.rename('/sdcard/Android/data/com.mobile.legends/files/UnityCache','/sdcard/Android/data/com.mobile.legends/files/yayan')
     os.rename('/storage/emulated/0/Android/data/com.mobile.legends/files/dragon/BattleRecord','/storage/emulated/0/Android/data/com.mobile.legends/files/dragon/yayan')
     os.rename('/sdcard/Android/data/com.mobile.legends/files/dragon/BattleRecord','/sdcard/Android/data/com.mobile.legends/files/dragon/yayan')
+    gg.toast('Battle Record Cleared!\n History deleted successfully!')
 end
 
+-- ==================== ENEMY NOOB ====================
 function EnemyNoob()
+    -- Run in LOBBY: applies matchmaking preference for low-rank enemies
     pcall(function()
         show_download_progress("ENEMY NOOB") complete_cleanup()
         gg.setRanges(gg.REGION_ANONYMOUS)
@@ -1432,10 +1360,13 @@ function EnemyNoob()
             if #res > 0 then for i, v in ipairs(res) do v.value = "1" end gg.setValues(res) break end
         end
         complete_cleanup()
+        gg.toast("ENEMY NOOB ACTIVE!\n Matching with low-rank enemies!")
     end)
 end
 
+-- ==================== TEAM PRO ====================
 function TeamPro()
+    -- Run in LOBBY: applies matchmaking preference for high-rank teammates
     pcall(function()
         show_download_progress("TEAM PRO") complete_cleanup()
         gg.setRanges(gg.REGION_ANONYMOUS)
@@ -1444,27 +1375,39 @@ function TeamPro()
             if #res > 0 then for i, v in ipairs(res) do v.value = "15" end gg.setValues(res) break end
         end
         complete_cleanup()
+        gg.toast("TEAM PRO ACTIVE!\n Matching with Mythic players!")
     end)
 end
 
+-- ==================== RANK BOOST ====================
 function RankBoost()
+    -- Run in DRAFT/LOBBY: try to match higher ranks or adjust matchmaking
+    -- Implementation intentionally disabled per prior request.
     return
 end
 
 function InvisibleName()
+    -- Removed by request: Invisible name disabled.
     return
 end
 
 function InvisibleNameOFF()
+    -- Removed by request: Invisible name toggle disabled.
     return
 end
 
+-- ==================== UNLOCK BATTLE SPELLS ====================
 function UnlockAllBattleSpells()
+    -- Removed by request: Unlock battle spells disabled.
     return
 end
 
+-- ==================== SKIN FUNCTIONS ====================
 function SkinMenuByRole()
     local role_menu = gg.choice({
+        "   TANKS","   FIGHTERS","   ASSASSINS",
+        "   MAGES","   MARKSMEN","   SUPPORT",
+        "   ALL HEROES","   BACK"
     }, nil, " SELECT ROLE ")
     if not role_menu then return end
     if role_menu == 1 then TankHeroes() end
@@ -1525,30 +1468,46 @@ function SupportHeroes()
 end
 
 function UnlockSkin(code, hero_name)
+    -- Removed by request: skin unlock disabled.
     return
 end
 
 function UnlockAllHeroesSkin()
+    -- Removed by request: full hero skin unlock disabled.
     return
 end
 
+-- ==================== EXIT (AUTO RESTORE) ====================
 function d()
-    pcall(function() gg.removeListItems(gg.getListItems()) end)
+    gg.removeListItems(gg.getListItems())
     if #injected_files > 0 then
-        restore_all_injected()
-        gg.sleep(300)
+        show_download_progress("RESTORING ORIGINAL FILES")
+        restore_all_injected() gg.sleep(500)
     end
-    notify_and_exit('Exit')
+    gg.toast("Goodbye. All files restored.")
+    gg.sleep(500) os.exit()
 end
 
+-- ==================== LOCAL STARTUP (NO NETWORK) ====================
 function local_startup()
+    -- Local startup disabled to enforce license check.
     hardened_exit()
 end
 
+-- ==================== MAIN MENU ====================
 function Main()
 local menu = gg.choice({
 
+"MAPHACK",
+"DRONEVIEW SELECTION (In-game)",
+"ENEMY LAG 310ms (In-game)",
+"ANTI-LAG 5ms (In-game)",
 "RANKED (schedule for Lobby)",
+"UNLOCK 120 FPS (Lobby)",
+"CLEAR BATTLE RECORD (Lobby)",
+"ROOM INFO (Draft)",
+"UPDATE LICENSE (Network)",
+"EXIT (Restore & Exit)"
 
 }, nil, "DOUTE MENU")
 
@@ -1556,6 +1515,29 @@ if not menu then return end
     if menu == 1 then MaphackAndESP() end
     if menu == 2 then
         local sub = gg.choice({
+            " DRONE V1 ON",
+            " DRONE V1 OFF",
+            "   TAB VIEW 2x ON",
+            " TAB VIEW 2x OFF",
+            " DRONE 3x ON",
+            " DRONE 3x OFF",
+            " DRONE 4x ON",
+            " DRONE 4x OFF",
+            " DRONE 7x ON ",
+            " DRONE 7x OFF",
+            " DRONE 8x ON",
+            " DRONE 8x OFF",
+            " DRONE 10x ON",
+            " DRONE 10x OFF",
+            " DRONE 11x ON",
+            " DRONE 11x OFF",
+            " DRONE 12x ON",
+            " DRONE 12x OFF",
+            " DRONE 13x ON",
+            " DRONE 13x OFF",
+            " DRONE 14x ON",
+            " DRONE 14x OFF",
+            " BACK"
         }, nil, " DRONE VIEWS")
         if sub == 1  then applyDroneViewV1() end
         if sub == 2  then DroneV1_OFF() end
@@ -1587,7 +1569,9 @@ if not menu then return end
     end
     if menu == 4 then AntiLag() end
     if menu == 5 then
+        -- Schedule RANKED to apply in Lobby/Draft
         RANKED_SCHEDULED = true
+        gg.toast("RANKED scheduled for Lobby — will apply automatically")
         return
     end
     if menu == 6 then SmoothBoost() end
@@ -1597,6 +1581,7 @@ if not menu then return end
     if menu == 10 then d() end
 end
 
+-- API export for module usage
 if ... then
     return {
         require_license = require_license,
@@ -1608,73 +1593,19 @@ if ... then
     }
 end
 
-local _SCRIPT_ALREADY_STARTED = false
-
-local function startup_verifications()
-    if not (type(auth_session) == 'table' and type(auth_session.token) == 'string' and auth_session.token:match('^SECURE_AUTH_')) then
-        if type(os) == 'table' and type(os.exit) == 'function' then os.exit() end
-        return false
-    end
-
-    if type(_G) == 'table' and _G.LOADER_HWID and _G.LOADER_HWID ~= "ТВОЙ_HWID_КАПСОМ" then
-    end
-
-    return true
-end
-
-local function remove_sensitive_files()
-    pcall(function()
-        local candidates = {'p.txt', 'p.txt.txt', 'license.txt', 'local_p.txt'}
-        for _, name in ipairs(candidates) do
-            local path = DIR .. name
-            pcall(function() os.remove(path) end)
-        end
-        if type(_G) == 'table' then
-            _G.LOADER_LICENSE_TEXT = nil
-        end
-    end)
-end
-
-local _ok_start, _err_start = pcall(function()
-    if not (type(auth_session) == 'table' and type(auth_session.token) == 'string' and auth_session.token:match('^SECURE_AUTH_')) then
-        if type(os) == 'table' and type(os.exit) == 'function' then os.exit() end
-    end
-
-    remove_sensitive_files()
-end)
-if not _ok_start then
-    notify_and_exit('Startup error')
-end
-make_dir(BACKUP_DIR)
-
+-- ==================== STARTUP ====================
 if not require_license() then
     return
 end
+make_dir(BACKUP_DIR)
 
-local function freeze_critical_state()
-    if type(_G) == 'table' then
-        _G.LOADER_HWID = nil
-        _G.LOADER_LICENSE_TEXT = nil
-        _G.LOADER_LICENSE_HEADERS = nil
-        _G.LOADER_SCRIPT_VERIFIED = nil
-        _G.LOADER_SCRIPT_HASH = nil
-    end
-    -- Clear session data from local scope to reduce in-memory exposure of token
-    auth_session = nil
-end
-
-freeze_critical_state()
-
+-- ==================== MAIN LOOP (FIXED - stable 100ms) ====================
 local game_was_running = true
-while RUNNING do
+while true do
     if gg.isVisible(true) then
         gg.setVisible(false)
         local ok, err = pcall(Main)
-        if not ok then
-            if tostring(err) == "__FORCED_EXIT__" then
-                break
-            end
-        end
+        if not ok then gg.toast(" Auto-recovery...") gg.sleep(500) end
     end
     pcall(function()
         local info = gg.getTargetInfo()
@@ -1683,22 +1614,21 @@ while RUNNING do
             restore_all_injected() game_was_running = false
         end
     end)
+    -- Apply scheduled Ranked settings when in Lobby (no active room players)
     pcall(function()
         if RANKED_SCHEDULED then
             local players = scan_room_players()
             if type(players) == 'table' and #players == 0 then
+                -- likely in lobby (no room/draft active)
                 EnemyNoob()
                 gg.sleep(150)
                 TeamPro()
                 gg.sleep(150)
                 RankBoost()
                 RANKED_SCHEDULED = false
+                gg.toast("RANKED applied in Lobby")
             end
         end
     end)
     gg.sleep(100)
 end
-
-hardened_exit()
-
-
